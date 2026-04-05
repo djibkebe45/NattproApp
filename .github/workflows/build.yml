@@ -29,7 +29,7 @@ jobs:
       - name: Create Flutter project
         run: |
           flutter create --project-name natt_pro_app .
-          sed -i 's/<\/manifest>/    <uses-permission android:name="android.permission.READ_CONTACTS"\/>\n<\/manifest>/' android/app/src/main/AndroidManifest.xml
+          sed -i 's/<\/manifest>/    <uses-permission android:name="android.permission.READ_CONTACTS"\/>\n    <uses-permission android:name="android.permission.INTERNET"\/>\n<\/manifest>/' android/app/src/main/AndroidManifest.xml
 
       - name: Install dependencies
         run: flutter pub get
