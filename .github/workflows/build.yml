@@ -23,6 +23,9 @@ jobs:
           flutter-version: '3.19.0'
           channel: 'stable'
 
+      - name: Create Flutter project
+        run: flutter create --project-name natt_pro_app .
+
       - name: Install dependencies
         run: flutter pub get
 
@@ -32,5 +35,5 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: NattProApp-release
+          name: NattproApp-release
           path: build/app/outputs/flutter-apk/app-release.apk
