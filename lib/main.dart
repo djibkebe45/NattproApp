@@ -3,11 +3,36 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:flutter_contacts/flutter_contacts.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:timezone/timezone.dart' as tz;
+import 'package:timezone/data/latest.dart' as tz;
 import 'supabase_config.dart';
 import 'dart:math';
 
+final FlutterLocalNotificationsPlugin notificationsPlugin = FlutterLocalNotificationsPlugin();
+
+Future<void> initNotifications() async {
+  tz.initializeTimeZones();
+  const android = AndroidInitializationSettings('@mipmap/ic_launcher');
+  const settings = InitializationSettings(android: android);
+  await notificationsPlugin.initialize(settings);
+}
+
+Future<void> envoyerNotification(String titre, String corps) async {
+  const details = NotificationDetails(
+    android: AndroidNotificationDetails(
+      'nattro_channel', 'NattPro',
+      channelDescription: 'Rappels de cotisation',
+      importance: Importance.high,
+      priority: Priority.high,
+    ),
+  );
+  await notificationsPlugin.show(0, titre, corps, details);
+}
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await initNotifications();
   await Supabase.initialize(url: supabaseUrl, anonKey: supabaseKey);
   runApp(NattProApp());
 }
@@ -68,6 +93,10 @@ class GroupeNatt {
   }
 }
 
+// ═══════════════════════════════
+// ÉCRAN ACCUEIL
+// ═══════════════════════════════
+
 class HomeScreen extends StatefulWidget {
   @override
   _HomeScreenState createState() => _HomeScreenState();
@@ -108,7 +137,10 @@ class _HomeScreenState extends State<HomeScreen> {
         backgroundColor: Color(0xFF006633),
         title: Text('NattPro 🤝', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
         centerTitle: true,
-        actions: [IconButton(icon: Icon(Icons.refresh, color: Colors.white), onPressed: _chargerGroupes)],
+        actions: [
+          IconButton(icon: Icon(Icons.notifications, color: Colors.white), onPressed: _testerNotification),
+          IconButton(icon: Icon(Icons.refresh, color: Colors.white), onPressed: _chargerGroupes),
+        ],
       ),
       body: chargement
           ? Center(child: CircularProgressIndicator(color: Color(0xFF006633)))
@@ -120,6 +152,11 @@ class _HomeScreenState extends State<HomeScreen> {
         label: Text('Nouveau Natt', style: TextStyle(color: Colors.white)),
       ),
     );
+  }
+
+  Future<void> _testerNotification() async {
+    await envoyerNotification('NattPro 🤝', 'Rappel : Pensez à cotiser pour votre Natt !');
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Notification envoyée !')));
   }
 
   Widget _buildEmpty() {
@@ -142,27 +179,59 @@ class _HomeScreenState extends State<HomeScreen> {
         itemBuilder: (context, index) {
           final groupe = groupes[index];
           final receveur = groupe.membres.isNotEmpty ? groupe.membres[groupe.tourActuel] : null;
-          return Card(
-            margin: EdgeInsets.only(bottom: 12),
-            elevation: 3,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-            child: ListTile(
-              contentPadding: EdgeInsets.all(16),
-              leading: CircleAvatar(
-                backgroundColor: Color(0xFF006633),
-                child: Text(groupe.nom[0].toUpperCase(), style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+          return Dismissible(
+            key: Key(groupe.id ?? index.toString()),
+            direction: DismissDirection.endToStart,
+            background: Container(
+              alignment: Alignment.centerRight,
+              padding: EdgeInsets.only(right: 20),
+              color: Colors.red,
+              child: Icon(Icons.delete, color: Colors.white),
+            ),
+            confirmDismiss: (_) async {
+              return await showDialog(
+                context: context,
+                builder: (_) => AlertDialog(
+                  title: Text('Supprimer ?'),
+                  content: Text('Supprimer le groupe "${groupe.nom}" ?'),
+                  actions: [
+                    TextButton(onPressed: () => Navigator.pop(context, false), child: Text('Annuler')),
+                    ElevatedButton(
+                      style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+                      onPressed: () => Navigator.pop(context, true),
+                      child: Text('Supprimer', style: TextStyle(color: Colors.white)),
+                    ),
+                  ],
+                ),
+              );
+            },
+            onDismissed: (_) async {
+              await supabase.from('groupes').delete().eq('id', groupe.id!);
+              setState(() => groupes.removeAt(index));
+              ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Groupe supprimé')));
+            },
+            child: Card(
+              margin: EdgeInsets.only(bottom: 12),
+              elevation: 3,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              child: ListTile(
+                contentPadding: EdgeInsets.all(16),
+                leading: CircleAvatar(
+                  backgroundColor: Color(0xFF006633),
+                  child: Text(groupe.nom[0].toUpperCase(), style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                ),
+                title: Text(groupe.nom, style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                subtitle: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  SizedBox(height: 4),
+                  Text('💰 ${groupe.montant.toStringAsFixed(0)} FCFA — ${groupe.frequence}'),
+                  if (receveur != null) Text('🎯 Tour : ${receveur.nom}', style: TextStyle(color: Color(0xFF006633), fontWeight: FontWeight.w600)),
+                  Text('👥 ${groupe.membres.length} membres'),
+                ]),
+                trailing: Icon(Icons.arrow_forward_ios, color: Color(0xFF006633)),
+                onTap: () => Navigator.push(context, MaterialPageRoute(
+                  builder: (_) => DetailGroupeScreen(groupe: groupe, onUpdate: _chargerGroupes),
+                )),
               ),
-              title: Text(groupe.nom, style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-              subtitle: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                SizedBox(height: 4),
-                Text('💰 ${groupe.montant.toStringAsFixed(0)} FCFA — ${groupe.frequence}'),
-                if (receveur != null) Text('🎯 Tour : ${receveur.nom}', style: TextStyle(color: Color(0xFF006633), fontWeight: FontWeight.w600)),
-                Text('👥 ${groupe.membres.length} membres'),
-              ]),
-              trailing: Icon(Icons.arrow_forward_ios, color: Color(0xFF006633)),
-              onTap: () => Navigator.push(context, MaterialPageRoute(
-                builder: (_) => DetailGroupeScreen(groupe: groupe, onUpdate: _chargerGroupes),
-              )),
             ),
           );
         },
@@ -176,6 +245,10 @@ class _HomeScreenState extends State<HomeScreen> {
     ));
   }
 }
+
+// ═══════════════════════════════
+// CRÉER UN GROUPE
+// ═══════════════════════════════
 
 class CreerGroupeScreen extends StatefulWidget {
   final VoidCallback onCreer;
@@ -264,6 +337,10 @@ class _CreerGroupeScreenState extends State<CreerGroupeScreen> {
   }
 }
 
+// ═══════════════════════════════
+// DÉTAIL GROUPE
+// ═══════════════════════════════
+
 class DetailGroupeScreen extends StatefulWidget {
   final GroupeNatt groupe;
   final VoidCallback onUpdate;
@@ -283,6 +360,7 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
         title: Text(groupe.nom, style: TextStyle(color: Colors.white)),
         iconTheme: IconThemeData(color: Colors.white),
         actions: [
+          IconButton(icon: Icon(Icons.history, color: Colors.white), tooltip: 'Historique', onPressed: _voirHistorique),
           IconButton(icon: Icon(Icons.share, color: Colors.white), tooltip: 'WhatsApp', onPressed: _partagerWhatsApp),
           if (groupe.membres.length >= 2)
             IconButton(icon: Icon(Icons.shuffle, color: Colors.white), onPressed: _tirage),
@@ -323,13 +401,28 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
   Widget _buildResume() {
     final groupe = widget.groupe;
     final cagnotte = groupe.membres.length * groupe.montant;
+    final paye = groupe.membres.where((m) => m.paiements.isNotEmpty && m.paiements.last).length;
     return Container(
       margin: EdgeInsets.all(16), padding: EdgeInsets.all(16),
       decoration: BoxDecoration(color: Color(0xFF006633), borderRadius: BorderRadius.circular(12)),
-      child: Row(mainAxisAlignment: MainAxisAlignment.spaceAround, children: [
-        _stat('👥', '${groupe.membres.length}', 'Membres'),
-        _stat('💰', '${groupe.montant.toStringAsFixed(0)}', 'FCFA'),
-        _stat('🏆', '${cagnotte.toStringAsFixed(0)}', 'Cagnotte'),
+      child: Column(children: [
+        Row(mainAxisAlignment: MainAxisAlignment.spaceAround, children: [
+          _stat('👥', '${groupe.membres.length}', 'Membres'),
+          _stat('💰', '${groupe.montant.toStringAsFixed(0)}', 'FCFA'),
+          _stat('🏆', '${cagnotte.toStringAsFixed(0)}', 'Cagnotte'),
+        ]),
+        SizedBox(height: 12),
+        ClipRRect(
+          borderRadius: BorderRadius.circular(10),
+          child: LinearProgressIndicator(
+            value: groupe.membres.isEmpty ? 0 : paye / groupe.membres.length,
+            backgroundColor: Colors.white30,
+            valueColor: AlwaysStoppedAnimation<Color>(Colors.greenAccent),
+            minHeight: 8,
+          ),
+        ),
+        SizedBox(height: 4),
+        Text('$paye / ${groupe.membres.length} ont payé', style: TextStyle(color: Colors.white70, fontSize: 12)),
       ]),
     );
   }
@@ -346,20 +439,63 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
     final groupe = widget.groupe;
     final estTour = groupe.tirageEffectue && index == groupe.tourActuel % groupe.membres.length;
     final aPaye = membre.paiements.isNotEmpty && membre.paiements.last;
-    return Card(
-      margin: EdgeInsets.symmetric(horizontal: 16, vertical: 5),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-      color: estTour ? Colors.amber[50] : null,
-      child: ListTile(
-        leading: CircleAvatar(
-          backgroundColor: estTour ? Colors.amber : Color(0xFF006633),
-          child: Text('${membre.ordre}', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-        ),
-        title: Text(membre.nom, style: TextStyle(fontWeight: FontWeight.bold)),
-        subtitle: Text(membre.telephone),
-        trailing: GestureDetector(
-          onTap: () => _togglePaiement(membre, aPaye),
-          child: Icon(aPaye ? Icons.check_circle : Icons.radio_button_unchecked, color: aPaye ? Colors.green : Colors.grey, size: 28),
+    return Dismissible(
+      key: Key(membre.id ?? index.toString()),
+      direction: DismissDirection.endToStart,
+      background: Container(
+        alignment: Alignment.centerRight,
+        padding: EdgeInsets.only(right: 20),
+        color: Colors.red,
+        child: Icon(Icons.delete, color: Colors.white),
+      ),
+      confirmDismiss: (_) async {
+        return await showDialog(
+          context: context,
+          builder: (_) => AlertDialog(
+            title: Text('Supprimer ?'),
+            content: Text('Supprimer "${membre.nom}" du groupe ?'),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(context, false), child: Text('Annuler')),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+                onPressed: () => Navigator.pop(context, true),
+                child: Text('Supprimer', style: TextStyle(color: Colors.white)),
+              ),
+            ],
+          ),
+        );
+      },
+      onDismissed: (_) async {
+        await supabase.from('membres').delete().eq('id', membre.id!);
+        setState(() {
+          widget.groupe.membres.removeAt(index);
+          widget.groupe.tirageEffectue = false;
+        });
+        widget.onUpdate();
+      },
+      child: Card(
+        margin: EdgeInsets.symmetric(horizontal: 16, vertical: 5),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        color: estTour ? Colors.amber[50] : null,
+        child: ListTile(
+          leading: CircleAvatar(
+            backgroundColor: estTour ? Colors.amber : Color(0xFF006633),
+            child: Text('${membre.ordre}', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+          ),
+          title: Text(membre.nom, style: TextStyle(fontWeight: FontWeight.bold)),
+          subtitle: Text(membre.telephone),
+          trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+            if (estTour) Container(
+              padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(color: Colors.amber, borderRadius: BorderRadius.circular(8)),
+              child: Text('🎯', style: TextStyle(fontSize: 12)),
+            ),
+            SizedBox(width: 6),
+            GestureDetector(
+              onTap: () => _togglePaiement(membre, aPaye),
+              child: Icon(aPaye ? Icons.check_circle : Icons.radio_button_unchecked, color: aPaye ? Colors.green : Colors.grey, size: 28),
+            ),
+          ]),
         ),
       ),
     );
@@ -378,9 +514,10 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
         if (membre.paiements.isEmpty) membre.paiements.add(!aPaye);
         else membre.paiements[membre.paiements.length - 1] = !aPaye;
       });
+      if (!aPaye) await envoyerNotification('✅ Paiement confirmé', '${membre.nom} a cotisé pour ${widget.groupe.nom}');
       widget.onUpdate();
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Erreur paiement: $e')));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Erreur: $e')));
     }
   }
 
@@ -407,6 +544,12 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
     }
   }
 
+  void _voirHistorique() {
+    Navigator.push(context, MaterialPageRoute(
+      builder: (_) => HistoriqueScreen(groupe: widget.groupe),
+    ));
+  }
+
   Future<void> _tirage() async {
     showDialog(
       context: context,
@@ -428,6 +571,7 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
               setState(() => widget.groupe.tirageEffectue = true);
               widget.onUpdate();
               _afficherResultat();
+              await envoyerNotification('🎲 Tirage effectué !', 'L\'ordre du ${widget.groupe.nom} est défini !');
             },
             child: Text('Tirer !', style: TextStyle(color: Colors.white)),
           ),
@@ -559,5 +703,94 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Erreur: $e')));
     }
+  }
+}
+
+// ═══════════════════════════════
+// HISTORIQUE DES PAIEMENTS
+// ═══════════════════════════════
+
+class HistoriqueScreen extends StatefulWidget {
+  final GroupeNatt groupe;
+  HistoriqueScreen({required this.groupe});
+  @override
+  _HistoriqueScreenState createState() => _HistoriqueScreenState();
+}
+
+class _HistoriqueScreenState extends State<HistoriqueScreen> {
+  List<Map<String, dynamic>> historique = [];
+  bool chargement = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _chargerHistorique();
+  }
+
+  Future<void> _chargerHistorique() async {
+    setState(() => chargement = true);
+    try {
+      final membres = widget.groupe.membres;
+      List<Map<String, dynamic>> result = [];
+      for (final membre in membres) {
+        if (membre.id == null) continue;
+        final paiements = await supabase.from('paiements').select().eq('membre_id', membre.id!).order('tour');
+        for (final p in paiements as List) {
+          result.add({
+            'membre': membre.nom,
+            'tour': p['tour'],
+            'paye': p['paye'],
+            'date': p['date_paiement'],
+          });
+        }
+      }
+      result.sort((a, b) => (b['tour'] as int).compareTo(a['tour'] as int));
+      setState(() { historique = result; chargement = false; });
+    } catch (e) {
+      setState(() => chargement = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        backgroundColor: Color(0xFF006633),
+        title: Text('Historique — ${widget.groupe.nom}', style: TextStyle(color: Colors.white)),
+        iconTheme: IconThemeData(color: Colors.white),
+      ),
+      body: chargement
+          ? Center(child: CircularProgressIndicator(color: Color(0xFF006633)))
+          : historique.isEmpty
+              ? Center(child: Text('Aucun paiement enregistré', style: TextStyle(color: Colors.grey)))
+              : ListView.builder(
+                  padding: EdgeInsets.all(16),
+                  itemCount: historique.length,
+                  itemBuilder: (context, index) {
+                    final h = historique[index];
+                    final date = h['date'] != null ? DateTime.parse(h['date']) : null;
+                    return Card(
+                      margin: EdgeInsets.only(bottom: 8),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      child: ListTile(
+                        leading: CircleAvatar(
+                          backgroundColor: h['paye'] ? Colors.green : Colors.red,
+                          child: Icon(h['paye'] ? Icons.check : Icons.close, color: Colors.white),
+                        ),
+                        title: Text(h['membre'], style: TextStyle(fontWeight: FontWeight.bold)),
+                        subtitle: Text('Tour ${h['tour'] + 1}${date != null ? ' • ${date.day}/${date.month}/${date.year}' : ''}'),
+                        trailing: Container(
+                          padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: h['paye'] ? Colors.green[50] : Colors.red[50],
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Text(h['paye'] ? 'Payé ✅' : 'Impayé ❌', style: TextStyle(color: h['paye'] ? Colors.green : Colors.red, fontWeight: FontWeight.bold, fontSize: 12)),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+    );
   }
 }
