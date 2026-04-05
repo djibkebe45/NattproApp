@@ -4,6 +4,7 @@ import 'package:flutter_contacts/flutter_contacts.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'supabase_config.dart';
 import 'dart:math';
+import 'package:url_launcher/url_launcher.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -399,6 +400,38 @@ class _CreerGroupeScreenState extends State<CreerGroupeScreen> {
 // DÉTAIL GROUPE
 // ═══════════════════════════════
 
+Future<void> _partagerWhatsApp() async {
+  final groupe = widget.groupe;
+  if (!groupe.tirageEffectue) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('⚠️ Effectuez le tirage d\'abord !')),
+    );
+    return;
+  }
+
+  String message = '🤝 *NattPro - ${groupe.nom}*\n\n';
+  message += '💰 Montant : ${groupe.montant.toStringAsFixed(0)} FCFA\n';
+  message += '📅 Fréquence : ${groupe.frequence}\n\n';
+  message += '🎯 *Ordre du tirage :*\n';
+
+  for (final membre in groupe.membres) {
+    message += '${membre.ordre}. ${membre.nom} - ${membre.telephone}\n';
+  }
+
+  message += '\n_Partagé via NattPro_ 🇸🇳';
+
+  final encoded = Uri.encodeComponent(message);
+  final url = Uri.parse('whatsapp://send?text=$encoded');
+
+  if (await canLaunchUrl(url)) {
+    await launchUrl(url);
+  } else {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('WhatsApp non installé !')),
+    );
+  }
+}
+
 class DetailGroupeScreen extends StatefulWidget {
   final GroupeNatt groupe;
   final VoidCallback onUpdate;
@@ -588,7 +621,11 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
         title: Text('🎲 Tirage au sort'),
         content: Text(
             'Mélanger aléatoirement les ${widget.groupe.membres.length} membres ?'),
-        actions: [
+        actions: [IconButton(
+  icon: Icon(Icons.share, color: Colors.white),
+  tooltip: 'Partager sur WhatsApp',
+  onPressed: _partagerWhatsApp,
+),
           TextButton(
               onPressed: () => Navigator.pop(context),
               child: Text('Annuler')),
