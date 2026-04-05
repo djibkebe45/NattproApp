@@ -1,5 +1,5 @@
 name: natt_pro_app
-description: NattProApp
+description: NattPro - Tontine Sénégalaise
 
 publish_to: 'none'
 
@@ -11,6 +11,8 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  flutter_contacts: ^1.1.9+2
+  permission_handler: ^11.3.1
 
 flutter:
   uses-material-design: true

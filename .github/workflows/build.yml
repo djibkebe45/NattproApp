@@ -18,17 +18,17 @@ jobs:
         uses: actions/setup-java@v4
         with:
           java-version: '17'
-          distribution: 'temurin'
-
+          distribution: 'temuri
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.19.0'
           channel: 'stable'
 
-      - name: Create Flutter project
-        run: flutter create --project-name natt_pro_app .
-
+- name: Create Flutter project
+        run: |
+          flutter create --project-name natt_pro_app .
+          echo '<uses-permission android:name="android.permission.READ_CONTACTS"/>' >> android/app/src/main/AndroidManifest.xml
       - name: Install dependencies
         run: flutter pub get
 
