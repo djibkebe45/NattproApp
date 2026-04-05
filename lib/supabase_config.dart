@@ -1,0 +1,2 @@
+const String supabaseUrl = 'https://nkwllsbbzrcqnfuytjkg.supabase.co';
+const String supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5rd2xsc2JienJjcW5mdXl0amtnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzUzODQwOTcsImV4cCI6MjA5MDk2MDA5N30.yttbrbmfT5Hd-J7oh2mU6WKb53Nh7QGFq3sGE7eQG2Q';

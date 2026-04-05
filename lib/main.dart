@@ -1,11 +1,20 @@
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:flutter_contacts/flutter_contacts.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'supabase_config.dart';
 import 'dart:math';
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Supabase.initialize(
+    url: supabaseUrl,
+    anonKey: supabaseKey,
+  );
   runApp(NattProApp());
 }
+
+final supabase = Supabase.instance.client;
 
 class NattProApp extends StatelessWidget {
   @override
@@ -27,20 +36,31 @@ class NattProApp extends StatelessWidget {
 // ═══════════════════════════════
 
 class Membre {
+  String? id;
   String nom;
   String telephone;
   int ordre;
   List<bool> paiements;
 
   Membre({
+    this.id,
     required this.nom,
     required this.telephone,
     required this.ordre,
     required this.paiements,
   });
+
+  factory Membre.fromJson(Map<String, dynamic> json) => Membre(
+    id: json['id'],
+    nom: json['nom'],
+    telephone: json['telephone'] ?? '',
+    ordre: json['ordre'] ?? 0,
+    paiements: [],
+  );
 }
 
 class GroupeNatt {
+  String? id;
   String nom;
   double montant;
   String frequence;
@@ -49,6 +69,7 @@ class GroupeNatt {
   bool tirageEffectue;
 
   GroupeNatt({
+    this.id,
     required this.nom,
     required this.montant,
     required this.frequence,
@@ -56,6 +77,16 @@ class GroupeNatt {
     required this.membres,
     this.tirageEffectue = false,
   });
+
+  factory GroupeNatt.fromJson(Map<String, dynamic> json) => GroupeNatt(
+    id: json['id'],
+    nom: json['nom'],
+    montant: (json['montant'] as num).toDouble(),
+    frequence: json['frequence'],
+    dateDebut: DateTime.parse(json['date_debut']),
+    tirageEffectue: json['tirage_effectue'] ?? false,
+    membres: [],
+  );
 
   int get tourActuel {
     final maintenant = DateTime.now();
@@ -81,6 +112,42 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   List<GroupeNatt> groupes = [];
+  bool chargement = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _chargerGroupes();
+  }
+
+  Future<void> _chargerGroupes() async {
+    setState(() => chargement = true);
+    try {
+      final data = await supabase
+          .from('groupes')
+          .select('*, membres(*)')
+          .order('created_at');
+
+      final liste = (data as List).map((g) {
+        final groupe = GroupeNatt.fromJson(g);
+        groupe.membres = (g['membres'] as List)
+            .map((m) => Membre.fromJson(m))
+            .toList();
+        groupe.membres.sort((a, b) => a.ordre.compareTo(b.ordre));
+        return groupe;
+      }).toList();
+
+      setState(() {
+        groupes = liste;
+        chargement = false;
+      });
+    } catch (e) {
+      setState(() => chargement = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Erreur de chargement: $e')),
+      );
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -91,8 +158,18 @@ class _HomeScreenState extends State<HomeScreen> {
         title: Text('NattPro 🤝',
             style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
         centerTitle: true,
+        actions: [
+          IconButton(
+            icon: Icon(Icons.refresh, color: Colors.white),
+            onPressed: _chargerGroupes,
+          ),
+        ],
       ),
-      body: groupes.isEmpty ? _buildEmpty() : _buildListe(),
+      body: chargement
+          ? Center(child: CircularProgressIndicator(color: Color(0xFF006633)))
+          : groupes.isEmpty
+              ? _buildEmpty()
+              : _buildListe(),
       floatingActionButton: FloatingActionButton.extended(
         backgroundColor: Color(0xFF006633),
         onPressed: _ajouterGroupe,
@@ -120,57 +197,63 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildListe() {
-    return ListView.builder(
-      padding: EdgeInsets.all(16),
-      itemCount: groupes.length,
-      itemBuilder: (context, index) {
-        final groupe = groupes[index];
-        final receveur = groupe.membres.isNotEmpty
-            ? groupe.membres[groupe.tourActuel]
-            : null;
-        return Card(
-          margin: EdgeInsets.only(bottom: 12),
-          elevation: 3,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-          child: ListTile(
-            contentPadding: EdgeInsets.all(16),
-            leading: CircleAvatar(
-              backgroundColor: Color(0xFF006633),
-              child: Text(groupe.nom[0].toUpperCase(),
-                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-            ),
-            title: Text(groupe.nom,
-                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-            subtitle: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                SizedBox(height: 4),
-                Text('💰 ${groupe.montant.toStringAsFixed(0)} FCFA — ${groupe.frequence}'),
-                if (receveur != null)
-                  Text('🎯 Tour : ${receveur.nom}',
-                      style: TextStyle(
-                          color: Color(0xFF006633), fontWeight: FontWeight.w600)),
-                Text('👥 ${groupe.membres.length} membres'),
-                if (!groupe.tirageEffectue && groupe.membres.isNotEmpty)
-                  Text('⚠️ Tirage non effectué',
-                      style: TextStyle(color: Colors.orange)),
-              ],
-            ),
-            trailing: Icon(Icons.arrow_forward_ios, color: Color(0xFF006633)),
-            onTap: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => DetailGroupeScreen(
-                    groupe: groupe,
-                    onUpdate: () => setState(() {}),
+    return RefreshIndicator(
+      color: Color(0xFF006633),
+      onRefresh: _chargerGroupes,
+      child: ListView.builder(
+        padding: EdgeInsets.all(16),
+        itemCount: groupes.length,
+        itemBuilder: (context, index) {
+          final groupe = groupes[index];
+          final receveur = groupe.membres.isNotEmpty
+              ? groupe.membres[groupe.tourActuel]
+              : null;
+          return Card(
+            margin: EdgeInsets.only(bottom: 12),
+            elevation: 3,
+            shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12)),
+            child: ListTile(
+              contentPadding: EdgeInsets.all(16),
+              leading: CircleAvatar(
+                backgroundColor: Color(0xFF006633),
+                child: Text(groupe.nom[0].toUpperCase(),
+                    style: TextStyle(
+                        color: Colors.white, fontWeight: FontWeight.bold)),
+              ),
+              title: Text(groupe.nom,
+                  style: TextStyle(
+                      fontWeight: FontWeight.bold, fontSize: 16)),
+              subtitle: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SizedBox(height: 4),
+                  Text('💰 ${groupe.montant.toStringAsFixed(0)} FCFA — ${groupe.frequence}'),
+                  if (receveur != null)
+                    Text('🎯 Tour : ${receveur.nom}',
+                        style: TextStyle(
+                            color: Color(0xFF006633),
+                            fontWeight: FontWeight.w600)),
+                  Text('👥 ${groupe.membres.length} membres'),
+                ],
+              ),
+              trailing:
+                  Icon(Icons.arrow_forward_ios, color: Color(0xFF006633)),
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => DetailGroupeScreen(
+                      groupe: groupe,
+                      onUpdate: _chargerGroupes,
+                    ),
                   ),
-                ),
-              );
-            },
-          ),
-        );
-      },
+                );
+              },
+            ),
+          );
+        },
+      ),
     );
   }
 
@@ -178,9 +261,7 @@ class _HomeScreenState extends State<HomeScreen> {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => CreerGroupeScreen(
-          onCreer: (groupe) => setState(() => groupes.add(groupe)),
-        ),
+        builder: (_) => CreerGroupeScreen(onCreer: _chargerGroupes),
       ),
     );
   }
@@ -191,7 +272,7 @@ class _HomeScreenState extends State<HomeScreen> {
 // ═══════════════════════════════
 
 class CreerGroupeScreen extends StatefulWidget {
-  final Function(GroupeNatt) onCreer;
+  final VoidCallback onCreer;
   CreerGroupeScreen({required this.onCreer});
 
   @override
@@ -203,6 +284,7 @@ class _CreerGroupeScreenState extends State<CreerGroupeScreen> {
   final _montantCtrl = TextEditingController();
   String _frequence = 'Mensuel';
   DateTime _dateDebut = DateTime.now();
+  bool _enregistrement = false;
 
   @override
   Widget build(BuildContext context) {
@@ -225,7 +307,8 @@ class _CreerGroupeScreenState extends State<CreerGroupeScreen> {
               value: _frequence,
               decoration: InputDecoration(
                 labelText: 'Fréquence',
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(10)),
               ),
               items: ['Hebdomadaire', 'Mensuel']
                   .map((f) => DropdownMenuItem(value: f, child: Text(f)))
@@ -262,9 +345,12 @@ class _CreerGroupeScreenState extends State<CreerGroupeScreen> {
                   shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(10)),
                 ),
-                onPressed: _valider,
-                child: Text('Créer',
-                    style: TextStyle(color: Colors.white, fontSize: 16)),
+                onPressed: _enregistrement ? null : _valider,
+                child: _enregistrement
+                    ? CircularProgressIndicator(color: Colors.white)
+                    : Text('Créer',
+                        style:
+                            TextStyle(color: Colors.white, fontSize: 16)),
               ),
             ),
           ],
@@ -281,21 +367,31 @@ class _CreerGroupeScreenState extends State<CreerGroupeScreen> {
       decoration: InputDecoration(
         labelText: label,
         prefixIcon: Icon(icon),
-        border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+        border:
+            OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
       ),
     );
   }
 
-  void _valider() {
+  Future<void> _valider() async {
     if (_nomCtrl.text.isEmpty || _montantCtrl.text.isEmpty) return;
-    widget.onCreer(GroupeNatt(
-      nom: _nomCtrl.text,
-      montant: double.tryParse(_montantCtrl.text) ?? 0,
-      frequence: _frequence,
-      dateDebut: _dateDebut,
-      membres: [],
-    ));
-    Navigator.pop(context);
+    setState(() => _enregistrement = true);
+    try {
+      await supabase.from('groupes').insert({
+        'nom': _nomCtrl.text,
+        'montant': double.tryParse(_montantCtrl.text) ?? 0,
+        'frequence': _frequence,
+        'date_debut': _dateDebut.toIso8601String().split('T')[0],
+        'tirage_effectue': false,
+      });
+      widget.onCreer();
+      Navigator.pop(context);
+    } catch (e) {
+      setState(() => _enregistrement = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Erreur: $e')),
+      );
+    }
   }
 }
 
@@ -325,7 +421,6 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
           if (groupe.membres.length >= 2)
             IconButton(
               icon: Icon(Icons.shuffle, color: Colors.white),
-              tooltip: 'Tirage au sort',
               onPressed: _tirage,
             ),
         ],
@@ -348,7 +443,7 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
                   SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      'Effectuez le tirage au sort pour définir l\'ordre des tours',
+                      'Effectuez le tirage pour définir l\'ordre des tours',
                       style: TextStyle(color: Colors.orange[800]),
                     ),
                   ),
@@ -359,7 +454,7 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
           Expanded(
             child: groupe.membres.isEmpty
                 ? Center(
-                    child: Text('Ajoutez des membres pour commencer !',
+                    child: Text('Ajoutez des membres !',
                         style: TextStyle(color: Colors.grey)))
                 : ListView.builder(
                     itemCount: groupe.membres.length,
@@ -408,103 +503,124 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
                 color: Colors.white,
                 fontWeight: FontWeight.bold,
                 fontSize: 16)),
-        Text(label, style: TextStyle(color: Colors.white70, fontSize: 11)),
+        Text(label,
+            style: TextStyle(color: Colors.white70, fontSize: 11)),
       ],
     );
   }
 
   Widget _buildMembreCard(Membre membre, int index) {
     final groupe = widget.groupe;
-    final estTour =
-        groupe.tirageEffectue && index == groupe.tourActuel % groupe.membres.length;
+    final estTour = groupe.tirageEffectue &&
+        index == groupe.tourActuel % groupe.membres.length;
     final aPaye = membre.paiements.isNotEmpty && membre.paiements.last;
 
     return Card(
       margin: EdgeInsets.symmetric(horizontal: 16, vertical: 5),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+      shape:
+          RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
       color: estTour ? Colors.amber[50] : null,
       child: ListTile(
         leading: CircleAvatar(
           backgroundColor: estTour ? Colors.amber : Color(0xFF006633),
           child: Text('${membre.ordre}',
-              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+              style: TextStyle(
+                  color: Colors.white, fontWeight: FontWeight.bold)),
         ),
-        title: Text(membre.nom, style: TextStyle(fontWeight: FontWeight.bold)),
+        title: Text(membre.nom,
+            style: TextStyle(fontWeight: FontWeight.bold)),
         subtitle: Text(membre.telephone),
-        trailing: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (estTour)
-              Container(
-                padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                decoration: BoxDecoration(
-                  color: Colors.amber,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Text('🎯 Tour',
-                    style:
-                        TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
-              ),
-            SizedBox(width: 6),
-            GestureDetector(
-              onTap: () {
-                setState(() {
-                  if (membre.paiements.isEmpty) {
-                    membre.paiements.add(true);
-                  } else {
-                    membre.paiements[membre.paiements.length - 1] = !aPaye;
-                  }
-                });
-                widget.onUpdate();
-              },
-              child: Icon(
-                aPaye ? Icons.check_circle : Icons.radio_button_unchecked,
-                color: aPaye ? Colors.green : Colors.grey,
-                size: 28,
-              ),
-            ),
-          ],
+        trailing: GestureDetector(
+          onTap: () => _togglePaiement(membre, aPaye),
+          child: Icon(
+            aPaye ? Icons.check_circle : Icons.radio_button_unchecked,
+            color: aPaye ? Colors.green : Colors.grey,
+            size: 28,
+          ),
         ),
       ),
     );
   }
 
-  // ── TIRAGE AU SORT ──
-  void _tirage() {
-    final groupe = widget.groupe;
+  Future<void> _togglePaiement(Membre membre, bool aPaye) async {
+    try {
+      final tourActuel = widget.groupe.tourActuel;
+      final existing = await supabase
+          .from('paiements')
+          .select()
+          .eq('membre_id', membre.id!)
+          .eq('tour', tourActuel);
+
+      if ((existing as List).isEmpty) {
+        await supabase.from('paiements').insert({
+          'membre_id': membre.id,
+          'tour': tourActuel,
+          'paye': true,
+          'date_paiement': DateTime.now().toIso8601String(),
+        });
+      } else {
+        await supabase
+            .from('paiements')
+            .update({'paye': !aPaye})
+            .eq('membre_id', membre.id!)
+            .eq('tour', tourActuel);
+      }
+
+      setState(() {
+        if (membre.paiements.isEmpty) {
+          membre.paiements.add(!aPaye);
+        } else {
+          membre.paiements[membre.paiements.length - 1] = !aPaye;
+        }
+      });
+      widget.onUpdate();
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Erreur paiement: $e')),
+      );
+    }
+  }
+
+  Future<void> _tirage() async {
     showDialog(
       context: context,
       builder: (_) => AlertDialog(
         title: Text('🎲 Tirage au sort'),
         content: Text(
-            'Voulez-vous mélanger aléatoirement l\'ordre des ${groupe.membres.length} membres ?'),
+            'Mélanger aléatoirement les ${widget.groupe.membres.length} membres ?'),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(context), child: Text('Annuler')),
+              onPressed: () => Navigator.pop(context),
+              child: Text('Annuler')),
           ElevatedButton(
-            style:
-                ElevatedButton.styleFrom(backgroundColor: Color(0xFF006633)),
-            onPressed: () {
-              setState(() {
-                groupe.membres.shuffle(Random());
-                for (int i = 0; i < groupe.membres.length; i++) {
-                  groupe.membres[i].ordre = i + 1;
-                }
-                groupe.tirageEffectue = true;
-              });
-              widget.onUpdate();
+            style: ElevatedButton.styleFrom(
+                backgroundColor: Color(0xFF006633)),
+            onPressed: () async {
               Navigator.pop(context);
-              _afficherResultatTirage();
+              widget.groupe.membres.shuffle(Random());
+              for (int i = 0; i < widget.groupe.membres.length; i++) {
+                widget.groupe.membres[i].ordre = i + 1;
+                await supabase
+                    .from('membres')
+                    .update({'ordre': i + 1}).eq(
+                        'id', widget.groupe.membres[i].id!);
+              }
+              await supabase
+                  .from('groupes')
+                  .update({'tirage_effectue': true}).eq(
+                      'id', widget.groupe.id!);
+              setState(() => widget.groupe.tirageEffectue = true);
+              widget.onUpdate();
+              _afficherResultat();
             },
-            child:
-                Text('Tirer !', style: TextStyle(color: Colors.white)),
+            child: Text('Tirer !', style: TextStyle(color: Colors.white)),
           ),
         ],
       ),
     );
   }
 
-  void _afficherResultatTirage() {
+  void _afficherResultat() {
     showDialog(
       context: context,
       builder: (_) => AlertDialog(
@@ -525,8 +641,8 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
         ),
         actions: [
           ElevatedButton(
-            style:
-                ElevatedButton.styleFrom(backgroundColor: Color(0xFF006633)),
+            style: ElevatedButton.styleFrom(
+                backgroundColor: Color(0xFF006633)),
             onPressed: () => Navigator.pop(context),
             child: Text('OK', style: TextStyle(color: Colors.white)),
           ),
@@ -535,7 +651,6 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
     );
   }
 
-  // ── OPTIONS AJOUT MEMBRE ──
   void _afficherOptionsAjout() {
     showModalBottomSheet(
       context: context,
@@ -547,7 +662,8 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
           mainAxisSize: MainAxisSize.min,
           children: [
             Text('Ajouter un membre',
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                style:
+                    TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
             SizedBox(height: 20),
             ListTile(
               leading: CircleAvatar(
@@ -555,7 +671,6 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
                 child: Icon(Icons.contacts, color: Colors.white),
               ),
               title: Text('Depuis mes contacts'),
-              subtitle: Text('Accéder au répertoire téléphonique'),
               onTap: () {
                 Navigator.pop(context);
                 _ajouterDepuisContacts();
@@ -568,7 +683,6 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
                 child: Icon(Icons.person_add, color: Colors.white),
               ),
               title: Text('Nouveau contact'),
-              subtitle: Text('Saisir manuellement'),
               onTap: () {
                 Navigator.pop(context);
                 _ajouterManuellement();
@@ -580,7 +694,6 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
     );
   }
 
-  // ── DEPUIS CONTACTS ──
   Future<void> _ajouterDepuisContacts() async {
     final status = await Permission.contacts.request();
     if (!status.isGranted) {
@@ -589,9 +702,8 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
       );
       return;
     }
-
-    final contacts = await FlutterContacts.getContacts(withProperties: true);
-
+    final contacts =
+        await FlutterContacts.getContacts(withProperties: true);
     showDialog(
       context: context,
       builder: (_) => AlertDialog(
@@ -599,53 +711,42 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
         content: SizedBox(
           width: double.maxFinite,
           height: 400,
-          child: contacts.isEmpty
-              ? Center(child: Text('Aucun contact trouvé'))
-              : ListView.builder(
-                  itemCount: contacts.length,
-                  itemBuilder: (context, index) {
-                    final contact = contacts[index];
-                    final tel = contact.phones.isNotEmpty
-                        ? contact.phones.first.number
-                        : '';
-                    return ListTile(
-                      leading: CircleAvatar(
-                        backgroundColor: Color(0xFF006633),
-                        child: Text(
-                          contact.displayName.isNotEmpty
-                              ? contact.displayName[0].toUpperCase()
-                              : '?',
-                          style: TextStyle(color: Colors.white),
-                        ),
-                      ),
-                      title: Text(contact.displayName),
-                      subtitle: Text(tel),
-                      onTap: () {
-                        setState(() {
-                          widget.groupe.membres.add(Membre(
-                            nom: contact.displayName,
-                            telephone: tel,
-                            ordre: widget.groupe.membres.length + 1,
-                            paiements: [],
-                          ));
-                          widget.groupe.tirageEffectue = false;
-                        });
-                        widget.onUpdate();
-                        Navigator.pop(context);
-                      },
-                    );
-                  },
+          child: ListView.builder(
+            itemCount: contacts.length,
+            itemBuilder: (context, index) {
+              final contact = contacts[index];
+              final tel = contact.phones.isNotEmpty
+                  ? contact.phones.first.number
+                  : '';
+              return ListTile(
+                leading: CircleAvatar(
+                  backgroundColor: Color(0xFF006633),
+                  child: Text(
+                    contact.displayName.isNotEmpty
+                        ? contact.displayName[0].toUpperCase()
+                        : '?',
+                    style: TextStyle(color: Colors.white),
+                  ),
                 ),
+                title: Text(contact.displayName),
+                subtitle: Text(tel),
+                onTap: () {
+                  Navigator.pop(context);
+                  _sauvegarderMembre(contact.displayName, tel);
+                },
+              );
+            },
+          ),
         ),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(context), child: Text('Fermer')),
+              onPressed: () => Navigator.pop(context),
+              child: Text('Fermer')),
         ],
       ),
     );
   }
 
-  // ── AJOUT MANUEL ──
   void _ajouterManuellement() {
     final nomCtrl = TextEditingController();
     final telCtrl = TextEditingController();
@@ -667,35 +768,57 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
               controller: telCtrl,
               keyboardType: TextInputType.phone,
               decoration: InputDecoration(
-                  labelText: 'Téléphone', prefixIcon: Icon(Icons.phone)),
+                  labelText: 'Téléphone',
+                  prefixIcon: Icon(Icons.phone)),
             ),
           ],
         ),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(context), child: Text('Annuler')),
+              onPressed: () => Navigator.pop(context),
+              child: Text('Annuler')),
           ElevatedButton(
-            style:
-                ElevatedButton.styleFrom(backgroundColor: Color(0xFF006633)),
+            style: ElevatedButton.styleFrom(
+                backgroundColor: Color(0xFF006633)),
             onPressed: () {
               if (nomCtrl.text.isNotEmpty) {
-                setState(() {
-                  widget.groupe.membres.add(Membre(
-                    nom: nomCtrl.text,
-                    telephone: telCtrl.text,
-                    ordre: widget.groupe.membres.length + 1,
-                    paiements: [],
-                  ));
-                  widget.groupe.tirageEffectue = false;
-                });
-                widget.onUpdate();
                 Navigator.pop(context);
+                _sauvegarderMembre(nomCtrl.text, telCtrl.text);
               }
             },
-            child: Text('Ajouter', style: TextStyle(color: Colors.white)),
+            child:
+                Text('Ajouter', style: TextStyle(color: Colors.white)),
           ),
         ],
       ),
     );
+  }
+
+  Future<void> _sauvegarderMembre(String nom, String telephone) async {
+    try {
+      final ordre = widget.groupe.membres.length + 1;
+      final result = await supabase.from('membres').insert({
+        'groupe_id': widget.groupe.id,
+        'nom': nom,
+        'telephone': telephone,
+        'ordre': ordre,
+      }).select();
+
+      setState(() {
+        widget.groupe.membres.add(Membre(
+          id: result[0]['id'],
+          nom: nom,
+          telephone: telephone,
+          ordre: ordre,
+          paiements: [],
+        ));
+        widget.groupe.tirageEffectue = false;
+      });
+      widget.onUpdate();
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Erreur: $e')),
+      );
+    }
   }
 }
