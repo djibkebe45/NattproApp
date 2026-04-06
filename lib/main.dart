@@ -4,15 +4,13 @@ import 'package:flutter_contacts/flutter_contacts.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:timezone/timezone.dart' as tz;
-import 'package:timezone/data/latest.dart' as tz;
 import 'supabase_config.dart';
 import 'dart:math';
 
-final FlutterLocalNotificationsPlugin notificationsPlugin = FlutterLocalNotificationsPlugin();
+final FlutterLocalNotificationsPlugin notificationsPlugin =
+    FlutterLocalNotificationsPlugin();
 
 Future<void> initNotifications() async {
-  tz.initializeTimeZones();
   const android = AndroidInitializationSettings('@mipmap/ic_launcher');
   const settings = InitializationSettings(android: android);
   await notificationsPlugin.initialize(settings);
@@ -39,6 +37,12 @@ void main() async {
 
 final supabase = Supabase.instance.client;
 
+// ── COULEURS WAVE ──
+const kBlue = Color(0xFF1B4FD8);
+const kBluLight = Color(0xFFEEF2FF);
+const kNoir = Color(0xFF111111);
+const kGris = Color(0xFF888888);
+
 class NattProApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
@@ -46,12 +50,26 @@ class NattProApp extends StatelessWidget {
       title: 'NattPro',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Color(0xFF006633)),
+        colorScheme: ColorScheme.fromSeed(seedColor: kBlue),
         useMaterial3: true,
+        fontFamily: 'sans-serif',
       ),
       home: HomeScreen(),
     );
   }
+}
+
+// ═══════════════════════════════
+// MODÈLES
+// ═══════════════════════════════
+
+class Paiement {
+  String? id;
+  String membreId;
+  int tour;
+  bool paye;
+  DateTime? date;
+  Paiement({this.id, required this.membreId, required this.tour, required this.paye, this.date});
 }
 
 class Membre {
@@ -59,12 +77,13 @@ class Membre {
   String nom;
   String telephone;
   int ordre;
-  List<bool> paiements;
+  List<Paiement> paiements;
   Membre({this.id, required this.nom, required this.telephone, required this.ordre, required this.paiements});
   factory Membre.fromJson(Map<String, dynamic> json) => Membre(
     id: json['id'], nom: json['nom'], telephone: json['telephone'] ?? '',
     ordre: json['ordre'] ?? 0, paiements: [],
   );
+  bool aPaye(int tour) => paiements.any((p) => p.tour == tour && p.paye);
 }
 
 class GroupeNatt {
@@ -81,6 +100,7 @@ class GroupeNatt {
     frequence: json['frequence'], dateDebut: DateTime.parse(json['date_debut']),
     tirageEffectue: json['tirage_effectue'] ?? false, membres: [],
   );
+
   int get tourActuel {
     final maintenant = DateTime.now();
     int tours = 0;
@@ -91,6 +111,18 @@ class GroupeNatt {
     }
     return tours.clamp(0, membres.isEmpty ? 0 : membres.length - 1);
   }
+
+  // Qui reçoit ce tour
+  Membre? get receveurActuel => membres.isNotEmpty && tirageEffectue
+      ? membres[tourActuel % membres.length]
+      : null;
+
+  // Natt terminé si tous ont reçu
+  bool get estTermine => tirageEffectue && membres.isNotEmpty && tourActuel >= membres.length - 1;
+
+  double get cagnotte => membres.length * montant;
+
+  int get nbPayesTourActuel => membres.where((m) => m.aPaye(tourActuel)).length;
 }
 
 // ═══════════════════════════════
@@ -105,6 +137,7 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   List<GroupeNatt> groupes = [];
   bool chargement = true;
+  int _onglet = 0;
 
   @override
   void initState() {
@@ -115,10 +148,17 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _chargerGroupes() async {
     setState(() => chargement = true);
     try {
-      final data = await supabase.from('groupes').select('*, membres(*)').order('created_at');
+      final data = await supabase.from('groupes').select('*, membres(*, paiements(*))').order('created_at');
       final liste = (data as List).map((g) {
         final groupe = GroupeNatt.fromJson(g);
-        groupe.membres = (g['membres'] as List).map((m) => Membre.fromJson(m)).toList();
+        groupe.membres = (g['membres'] as List).map((m) {
+          final membre = Membre.fromJson(m);
+          membre.paiements = (m['paiements'] as List).map((p) => Paiement(
+            id: p['id'], membreId: p['membre_id'], tour: p['tour'],
+            paye: p['paye'], date: p['date_paiement'] != null ? DateTime.parse(p['date_paiement']) : null,
+          )).toList();
+          return membre;
+        }).toList();
         groupe.membres.sort((a, b) => a.ordre.compareTo(b.ordre));
         return groupe;
       }).toList();
@@ -133,116 +173,291 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.grey[100],
-      appBar: AppBar(
-        backgroundColor: Color(0xFF006633),
-        title: Text('NattPro 🤝', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-        centerTitle: true,
-        actions: [
-          IconButton(icon: Icon(Icons.notifications, color: Colors.white), onPressed: _testerNotification),
-          IconButton(icon: Icon(Icons.refresh, color: Colors.white), onPressed: _chargerGroupes),
-        ],
-      ),
-      body: chargement
-          ? Center(child: CircularProgressIndicator(color: Color(0xFF006633)))
-          : groupes.isEmpty ? _buildEmpty() : _buildListe(),
-      floatingActionButton: FloatingActionButton.extended(
-        backgroundColor: Color(0xFF006633),
+      body: _onglet == 0 ? _buildAccueil() : _buildPaiements(),
+      bottomNavigationBar: _buildNavBar(),
+      floatingActionButton: _onglet == 0 ? FloatingActionButton(
+        backgroundColor: kBlue,
         onPressed: _ajouterGroupe,
-        icon: Icon(Icons.add, color: Colors.white),
-        label: Text('Nouveau Natt', style: TextStyle(color: Colors.white)),
+        child: Icon(Icons.add, color: Colors.white),
+      ) : null,
+    );
+  }
+
+  Widget _buildNavBar() {
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        border: Border(top: BorderSide(color: Colors.grey.shade200)),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceAround,
+        children: [
+          _navItem(0, Icons.home_rounded, 'Accueil'),
+          _navItem(1, Icons.receipt_long_rounded, 'Paiements'),
+        ],
       ),
     );
   }
 
-  Future<void> _testerNotification() async {
-    await envoyerNotification('NattPro 🤝', 'Rappel : Pensez à cotiser pour votre Natt !');
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Notification envoyée !')));
+  Widget _navItem(int index, IconData icon, String label) {
+    final actif = _onglet == index;
+    return GestureDetector(
+      onTap: () => setState(() => _onglet = index),
+      child: Container(
+        padding: EdgeInsets.symmetric(vertical: 12, horizontal: 24),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Icon(icon, color: actif ? kBlue : kGris, size: 24),
+          SizedBox(height: 4),
+          Text(label, style: TextStyle(fontSize: 11, color: actif ? kBlue : kGris, fontWeight: actif ? FontWeight.w600 : FontWeight.normal)),
+          if (actif) Container(margin: EdgeInsets.only(top: 3), width: 4, height: 4, decoration: BoxDecoration(color: kBlue, shape: BoxShape.circle)),
+        ]),
+      ),
+    );
+  }
+
+  Widget _buildAccueil() {
+    final totalCagnotte = groupes.fold(0.0, (sum, g) => sum + g.cagnotte);
+    return CustomScrollView(
+      slivers: [
+        SliverAppBar(
+          expandedHeight: 160,
+          pinned: true,
+          backgroundColor: kBlue,
+          flexibleSpace: FlexibleSpaceBar(
+            background: Container(
+              color: kBlue,
+              padding: EdgeInsets.fromLTRB(20, 60, 20, 16),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                  Text('NattPro 🤝', style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w600)),
+                  Row(children: [
+                    IconButton(icon: Icon(Icons.notifications_outlined, color: Colors.white), onPressed: _testerNotification),
+                    IconButton(icon: Icon(Icons.refresh, color: Colors.white), onPressed: _chargerGroupes),
+                  ]),
+                ]),
+                SizedBox(height: 8),
+                Container(
+                  padding: EdgeInsets.all(14),
+                  decoration: BoxDecoration(color: Colors.white.withOpacity(0.15), borderRadius: BorderRadius.circular(14)),
+                  child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                    Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Text('Cagnotte totale', style: TextStyle(color: Colors.white70, fontSize: 11)),
+                      Text('${totalCagnotte.toStringAsFixed(0)} FCFA', style: TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.w600)),
+                    ]),
+                    Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+                      Text('Groupes actifs', style: TextStyle(color: Colors.white70, fontSize: 11)),
+                      Text('${groupes.length}', style: TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.w600)),
+                    ]),
+                  ]),
+                ),
+              ]),
+            ),
+          ),
+        ),
+        chargement
+            ? SliverFillRemaining(child: Center(child: CircularProgressIndicator(color: kBlue)))
+            : groupes.isEmpty
+                ? SliverFillRemaining(child: _buildEmpty())
+                : SliverPadding(
+                    padding: EdgeInsets.all(16),
+                    sliver: SliverList(
+                      delegate: SliverChildBuilderDelegate(
+                        (context, index) => _buildGroupeCard(groupes[index], index),
+                        childCount: groupes.length,
+                      ),
+                    ),
+                  ),
+      ],
+    );
   }
 
   Widget _buildEmpty() {
     return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-      Text('🤝', style: TextStyle(fontSize: 80)),
+      Text('🤝', style: TextStyle(fontSize: 60)),
       SizedBox(height: 16),
-      Text('Amul Natt bi', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+      Text('Amul Natt bi', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600, color: kNoir)),
       SizedBox(height: 8),
-      Text('Créez votre premier groupe de tontine', style: TextStyle(color: Colors.grey)),
+      Text('Créez votre premier groupe', style: TextStyle(color: kGris)),
     ]));
   }
 
-  Widget _buildListe() {
-    return RefreshIndicator(
-      color: Color(0xFF006633),
-      onRefresh: _chargerGroupes,
-      child: ListView.builder(
-        padding: EdgeInsets.all(16),
-        itemCount: groupes.length,
-        itemBuilder: (context, index) {
-          final groupe = groupes[index];
-          final receveur = groupe.membres.isNotEmpty ? groupe.membres[groupe.tourActuel] : null;
-          return Dismissible(
-            key: Key(groupe.id ?? index.toString()),
-            direction: DismissDirection.endToStart,
-            background: Container(
-              alignment: Alignment.centerRight,
-              padding: EdgeInsets.only(right: 20),
-              color: Colors.red,
-              child: Icon(Icons.delete, color: Colors.white),
-            ),
-            confirmDismiss: (_) async {
-              return await showDialog(
-                context: context,
-                builder: (_) => AlertDialog(
-                  title: Text('Supprimer ?'),
-                  content: Text('Supprimer le groupe "${groupe.nom}" ?'),
-                  actions: [
-                    TextButton(onPressed: () => Navigator.pop(context, false), child: Text('Annuler')),
-                    ElevatedButton(
-                      style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-                      onPressed: () => Navigator.pop(context, true),
-                      child: Text('Supprimer', style: TextStyle(color: Colors.white)),
-                    ),
-                  ],
-                ),
-              );
-            },
-            onDismissed: (_) async {
-              await supabase.from('groupes').delete().eq('id', groupe.id!);
-              setState(() => groupes.removeAt(index));
-              ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Groupe supprimé')));
-            },
-            child: Card(
-              margin: EdgeInsets.only(bottom: 12),
-              elevation: 3,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-              child: ListTile(
-                contentPadding: EdgeInsets.all(16),
-                leading: CircleAvatar(
-                  backgroundColor: Color(0xFF006633),
-                  child: Text(groupe.nom[0].toUpperCase(), style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                ),
-                title: Text(groupe.nom, style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                subtitle: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  SizedBox(height: 4),
-                  Text('💰 ${groupe.montant.toStringAsFixed(0)} FCFA — ${groupe.frequence}'),
-                  if (receveur != null) Text('🎯 Tour : ${receveur.nom}', style: TextStyle(color: Color(0xFF006633), fontWeight: FontWeight.w600)),
-                  Text('👥 ${groupe.membres.length} membres'),
-                ]),
-                trailing: Icon(Icons.arrow_forward_ios, color: Color(0xFF006633)),
-                onTap: () => Navigator.push(context, MaterialPageRoute(
-                  builder: (_) => DetailGroupeScreen(groupe: groupe, onUpdate: _chargerGroupes),
-                )),
+  Widget _buildGroupeCard(GroupeNatt groupe, int index) {
+    final receveur = groupe.receveurActuel;
+    final progression = groupe.membres.isEmpty ? 0.0 : groupe.nbPayesTourActuel / groupe.membres.length;
+    return Dismissible(
+      key: Key(groupe.id ?? index.toString()),
+      direction: DismissDirection.endToStart,
+      background: Container(
+        alignment: Alignment.centerRight, padding: EdgeInsets.only(right: 20),
+        decoration: BoxDecoration(color: Colors.red, borderRadius: BorderRadius.circular(16)),
+        child: Icon(Icons.delete, color: Colors.white),
+      ),
+      confirmDismiss: (_) async => await showDialog(
+        context: context,
+        builder: (_) => AlertDialog(
+          title: Text('Supprimer ?'),
+          content: Text('Supprimer "${groupe.nom}" ?'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context, false), child: Text('Annuler')),
+            ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: Colors.red), onPressed: () => Navigator.pop(context, true), child: Text('Supprimer', style: TextStyle(color: Colors.white))),
+          ],
+        ),
+      ),
+      onDismissed: (_) async {
+        await supabase.from('groupes').delete().eq('id', groupe.id!);
+        setState(() => groupes.removeAt(index));
+      },
+      child: GestureDetector(
+        onTap: () => Navigator.push(context, MaterialPageRoute(
+          builder: (_) => DetailGroupeScreen(groupe: groupe, onUpdate: _chargerGroupes),
+        )),
+        child: Container(
+          margin: EdgeInsets.only(bottom: 12),
+          padding: EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: Colors.grey.shade100),
+          ),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Row(children: [
+              Container(
+                width: 44, height: 44,
+                decoration: BoxDecoration(color: kBlue, borderRadius: BorderRadius.circular(12)),
+                child: Center(child: Text(groupe.nom[0].toUpperCase(), style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 18))),
               ),
+              SizedBox(width: 12),
+              Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(groupe.nom, style: TextStyle(fontWeight: FontWeight.w600, fontSize: 15, color: kNoir)),
+                Text('${groupe.membres.length} membres · ${groupe.frequence}', style: TextStyle(color: kGris, fontSize: 12)),
+              ])),
+              Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+                Text('${groupe.montant.toStringAsFixed(0)}', style: TextStyle(color: kBlue, fontWeight: FontWeight.w600, fontSize: 15)),
+                Text('FCFA', style: TextStyle(color: kGris, fontSize: 11)),
+              ]),
+            ]),
+            SizedBox(height: 12),
+            if (receveur != null) Container(
+              padding: EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(color: kBluLight, borderRadius: BorderRadius.circular(8)),
+              child: Row(children: [
+                Icon(Icons.emoji_events_rounded, color: kBlue, size: 14),
+                SizedBox(width: 6),
+                Text('Tour ${groupe.tourActuel + 1} : ${receveur.nom} reçoit', style: TextStyle(color: kBlue, fontSize: 12, fontWeight: FontWeight.w500)),
+              ]),
             ),
-          );
-        },
+            if (!groupe.tirageEffectue && groupe.membres.length >= 2) Container(
+              padding: EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(color: Color(0xFFFFF3E0), borderRadius: BorderRadius.circular(8)),
+              child: Row(children: [
+                Icon(Icons.info_outline, color: Colors.orange, size: 14),
+                SizedBox(width: 6),
+                Text('Tirage au sort requis', style: TextStyle(color: Colors.orange.shade800, fontSize: 12)),
+              ]),
+            ),
+            if (groupe.membres.isNotEmpty) ...[
+              SizedBox(height: 10),
+              Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                Text('Cotisations ce tour', style: TextStyle(color: kGris, fontSize: 11)),
+                Text('${groupe.nbPayesTourActuel}/${groupe.membres.length}', style: TextStyle(color: kBlue, fontSize: 11, fontWeight: FontWeight.w600)),
+              ]),
+              SizedBox(height: 4),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(4),
+                child: LinearProgressIndicator(
+                  value: progression,
+                  backgroundColor: Colors.grey.shade100,
+                  valueColor: AlwaysStoppedAnimation<Color>(kBlue),
+                  minHeight: 5,
+                ),
+              ),
+            ],
+          ]),
+        ),
       ),
     );
   }
 
+  Widget _buildPaiements() {
+    return CustomScrollView(
+      slivers: [
+        SliverAppBar(
+          pinned: true,
+          backgroundColor: kBlue,
+          title: Text('Historique', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+        ),
+        SliverPadding(
+          padding: EdgeInsets.all(16),
+          sliver: SliverList(
+            delegate: SliverChildBuilderDelegate(
+              (context, index) {
+                final groupe = groupes[index];
+                return Container(
+                  margin: EdgeInsets.only(bottom: 12),
+                  padding: EdgeInsets.all(16),
+                  decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(16)),
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Text(groupe.nom, style: TextStyle(fontWeight: FontWeight.w600, fontSize: 15, color: kNoir)),
+                    SizedBox(height: 10),
+                    ...groupe.membres.map((m) => Padding(
+                      padding: EdgeInsets.symmetric(vertical: 4),
+                      child: Row(children: [
+                        CircleAvatar(radius: 14, backgroundColor: kBluLight, child: Text(m.nom[0], style: TextStyle(color: kBlue, fontSize: 11, fontWeight: FontWeight.w600))),
+                        SizedBox(width: 10),
+                        Expanded(child: Text(m.nom, style: TextStyle(fontSize: 13))),
+                        ...List.generate(groupe.membres.length, (tour) {
+                          final paye = m.aPaye(tour);
+                          final recoit = groupe.tirageEffectue && m.ordre - 1 == tour;
+                          return Container(
+                            margin: EdgeInsets.only(left: 3),
+                            width: 22, height: 22,
+                            decoration: BoxDecoration(
+                              color: recoit ? Colors.amber.shade100 : paye ? Color(0xFFE8F5E9) : Colors.grey.shade100,
+                              borderRadius: BorderRadius.circular(6),
+                              border: Border.all(color: recoit ? Colors.amber : paye ? Colors.green.shade300 : Colors.grey.shade200),
+                            ),
+                            child: Center(child: Icon(
+                              recoit ? Icons.star_rounded : paye ? Icons.check_rounded : Icons.remove,
+                              size: 12,
+                              color: recoit ? Colors.amber.shade700 : paye ? Colors.green : Colors.grey.shade400,
+                            )),
+                          );
+                        }),
+                      ]),
+                    )).toList(),
+                    SizedBox(height: 8),
+                    Row(children: [
+                      _legendeItem(Colors.amber, '⭐ Reçoit'),
+                      SizedBox(width: 12),
+                      _legendeItem(Colors.green, '✓ Payé'),
+                      SizedBox(width: 12),
+                      _legendeItem(Colors.grey, '— Non payé'),
+                    ]),
+                  ]),
+                );
+              },
+              childCount: groupes.length,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _legendeItem(MaterialColor color, String label) {
+    return Row(children: [
+      Container(width: 10, height: 10, decoration: BoxDecoration(color: color.shade100, border: Border.all(color: color.shade300), borderRadius: BorderRadius.circular(3))),
+      SizedBox(width: 4),
+      Text(label, style: TextStyle(fontSize: 10, color: kGris)),
+    ]);
+  }
+
+  Future<void> _testerNotification() async {
+    await envoyerNotification('NattPro 🤝', 'Rappel : Pensez à cotiser pour votre Natt !');
+  }
+
   void _ajouterGroupe() {
-    Navigator.push(context, MaterialPageRoute(
-      builder: (_) => CreerGroupeScreen(onCreer: _chargerGroupes),
-    ));
+    Navigator.push(context, MaterialPageRoute(builder: (_) => CreerGroupeScreen(onCreer: _chargerGroupes)));
   }
 }
 
@@ -267,44 +482,47 @@ class _CreerGroupeScreenState extends State<CreerGroupeScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: Colors.grey[100],
       appBar: AppBar(
-        backgroundColor: Color(0xFF006633),
+        backgroundColor: kBlue,
         title: Text('Créer un Natt', style: TextStyle(color: Colors.white)),
         iconTheme: IconThemeData(color: Colors.white),
       ),
-      body: Padding(
+      body: SingleChildScrollView(
         padding: EdgeInsets.all(20),
         child: Column(children: [
-          _champ(_nomCtrl, 'Nom du groupe', Icons.group),
-          SizedBox(height: 16),
-          _champ(_montantCtrl, 'Montant (FCFA)', Icons.attach_money, type: TextInputType.number),
-          SizedBox(height: 16),
-          DropdownButtonFormField<String>(
-            value: _frequence,
-            decoration: InputDecoration(labelText: 'Fréquence', border: OutlineInputBorder(borderRadius: BorderRadius.circular(10))),
-            items: ['Hebdomadaire', 'Mensuel'].map((f) => DropdownMenuItem(value: f, child: Text(f))).toList(),
-            onChanged: (val) => setState(() => _frequence = val!),
-          ),
-          SizedBox(height: 16),
-          ListTile(
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10), side: BorderSide(color: Colors.grey)),
-            leading: Icon(Icons.calendar_today),
-            title: Text('Date de début'),
-            subtitle: Text('${_dateDebut.day}/${_dateDebut.month}/${_dateDebut.year}'),
-            onTap: () async {
-              final date = await showDatePicker(context: context, initialDate: _dateDebut, firstDate: DateTime(2024), lastDate: DateTime(2030));
-              if (date != null) setState(() => _dateDebut = date);
-            },
-          ),
-          SizedBox(height: 30),
+          _card(children: [
+            _champ(_nomCtrl, 'Nom du groupe', Icons.group),
+            SizedBox(height: 14),
+            _champ(_montantCtrl, 'Montant de cotisation (FCFA)', Icons.attach_money, type: TextInputType.number),
+            SizedBox(height: 14),
+            DropdownButtonFormField<String>(
+              value: _frequence,
+              decoration: InputDecoration(labelText: 'Fréquence', prefixIcon: Icon(Icons.repeat), border: OutlineInputBorder(borderRadius: BorderRadius.circular(10))),
+              items: ['Hebdomadaire', 'Mensuel'].map((f) => DropdownMenuItem(value: f, child: Text(f))).toList(),
+              onChanged: (val) => setState(() => _frequence = val!),
+            ),
+            SizedBox(height: 14),
+            ListTile(
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10), side: BorderSide(color: Colors.grey.shade300)),
+              leading: Icon(Icons.calendar_today, color: kBlue),
+              title: Text('Date de début'),
+              subtitle: Text('${_dateDebut.day}/${_dateDebut.month}/${_dateDebut.year}'),
+              onTap: () async {
+                final date = await showDatePicker(context: context, initialDate: _dateDebut, firstDate: DateTime(2024), lastDate: DateTime(2030));
+                if (date != null) setState(() => _dateDebut = date);
+              },
+            ),
+          ]),
+          SizedBox(height: 24),
           SizedBox(
-            width: double.infinity, height: 50,
+            width: double.infinity, height: 52,
             child: ElevatedButton(
-              style: ElevatedButton.styleFrom(backgroundColor: Color(0xFF006633), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
+              style: ElevatedButton.styleFrom(backgroundColor: kBlue, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))),
               onPressed: _enregistrement ? null : _valider,
               child: _enregistrement
                   ? CircularProgressIndicator(color: Colors.white)
-                  : Text('Créer', style: TextStyle(color: Colors.white, fontSize: 16)),
+                  : Text('Créer le groupe', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
             ),
           ),
         ]),
@@ -312,10 +530,18 @@ class _CreerGroupeScreenState extends State<CreerGroupeScreen> {
     );
   }
 
+  Widget _card({required List<Widget> children}) {
+    return Container(
+      padding: EdgeInsets.all(16),
+      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(16)),
+      child: Column(children: children),
+    );
+  }
+
   Widget _champ(TextEditingController ctrl, String label, IconData icon, {TextInputType type = TextInputType.text}) {
     return TextField(
       controller: ctrl, keyboardType: type,
-      decoration: InputDecoration(labelText: label, prefixIcon: Icon(icon), border: OutlineInputBorder(borderRadius: BorderRadius.circular(10))),
+      decoration: InputDecoration(labelText: label, prefixIcon: Icon(icon, color: kBlue), border: OutlineInputBorder(borderRadius: BorderRadius.circular(10))),
     );
   }
 
@@ -355,13 +581,13 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
   Widget build(BuildContext context) {
     final groupe = widget.groupe;
     return Scaffold(
+      backgroundColor: Colors.grey[100],
       appBar: AppBar(
-        backgroundColor: Color(0xFF006633),
-        title: Text(groupe.nom, style: TextStyle(color: Colors.white)),
+        backgroundColor: kBlue,
+        title: Text(groupe.nom, style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
         iconTheme: IconThemeData(color: Colors.white),
         actions: [
-          IconButton(icon: Icon(Icons.history, color: Colors.white), tooltip: 'Historique', onPressed: _voirHistorique),
-          IconButton(icon: Icon(Icons.share, color: Colors.white), tooltip: 'WhatsApp', onPressed: _partagerWhatsApp),
+          IconButton(icon: Icon(Icons.share, color: Colors.white), onPressed: _partagerWhatsApp),
           if (groupe.membres.length >= 2)
             IconButton(icon: Icon(Icons.shuffle, color: Colors.white), onPressed: _tirage),
         ],
@@ -370,27 +596,27 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
         _buildResume(),
         if (!groupe.tirageEffectue && groupe.membres.length >= 2)
           Container(
-            margin: EdgeInsets.symmetric(horizontal: 16),
+            margin: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
             padding: EdgeInsets.all(12),
-            decoration: BoxDecoration(color: Colors.orange[50], borderRadius: BorderRadius.circular(10), border: Border.all(color: Colors.orange)),
+            decoration: BoxDecoration(color: Color(0xFFFFF3E0), borderRadius: BorderRadius.circular(12), border: Border.all(color: Colors.orange.shade200)),
             child: Row(children: [
-              Icon(Icons.info_outline, color: Colors.orange),
-              SizedBox(width: 8),
-              Expanded(child: Text('Effectuez le tirage pour définir l\'ordre', style: TextStyle(color: Colors.orange[800]))),
+              Icon(Icons.shuffle, color: Colors.orange),
+              SizedBox(width: 10),
+              Expanded(child: Text('Lancez le tirage au sort pour définir l\'ordre', style: TextStyle(color: Colors.orange.shade800, fontSize: 13))),
             ]),
           ),
-        SizedBox(height: 8),
         Expanded(
           child: groupe.membres.isEmpty
-              ? Center(child: Text('Ajoutez des membres !', style: TextStyle(color: Colors.grey)))
+              ? Center(child: Text('Ajoutez des membres !', style: TextStyle(color: kGris)))
               : ListView.builder(
+                  padding: EdgeInsets.all(16),
                   itemCount: groupe.membres.length,
                   itemBuilder: (context, index) => _buildMembreCard(groupe.membres[index], index),
                 ),
         ),
       ]),
       floatingActionButton: FloatingActionButton.extended(
-        backgroundColor: Color(0xFF006633),
+        backgroundColor: kBlue,
         onPressed: _afficherOptionsAjout,
         icon: Icon(Icons.person_add, color: Colors.white),
         label: Text('Ajouter', style: TextStyle(color: Colors.white)),
@@ -400,121 +626,145 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
 
   Widget _buildResume() {
     final groupe = widget.groupe;
-    final cagnotte = groupe.membres.length * groupe.montant;
-    final paye = groupe.membres.where((m) => m.paiements.isNotEmpty && m.paiements.last).length;
+    final tour = groupe.tourActuel;
+    final nbPaies = groupe.nbPayesTourActuel;
+    final progression = groupe.membres.isEmpty ? 0.0 : nbPaies / groupe.membres.length;
     return Container(
-      margin: EdgeInsets.all(16), padding: EdgeInsets.all(16),
-      decoration: BoxDecoration(color: Color(0xFF006633), borderRadius: BorderRadius.circular(12)),
+      margin: EdgeInsets.all(16),
+      padding: EdgeInsets.all(16),
+      decoration: BoxDecoration(color: kBlue, borderRadius: BorderRadius.circular(16)),
       child: Column(children: [
         Row(mainAxisAlignment: MainAxisAlignment.spaceAround, children: [
           _stat('👥', '${groupe.membres.length}', 'Membres'),
-          _stat('💰', '${groupe.montant.toStringAsFixed(0)}', 'FCFA'),
-          _stat('🏆', '${cagnotte.toStringAsFixed(0)}', 'Cagnotte'),
+          _stat('💰', '${groupe.montant.toStringAsFixed(0)}', 'FCFA/tour'),
+          _stat('🏆', '${groupe.cagnotte.toStringAsFixed(0)}', 'Cagnotte'),
+          _stat('📅', '${tour + 1}/${groupe.membres.length}', 'Tour'),
         ]),
-        SizedBox(height: 12),
+        if (groupe.receveurActuel != null) ...[
+          SizedBox(height: 12),
+          Container(
+            padding: EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+            decoration: BoxDecoration(color: Colors.white.withOpacity(0.2), borderRadius: BorderRadius.circular(10)),
+            child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+              Icon(Icons.emoji_events_rounded, color: Colors.amber, size: 18),
+              SizedBox(width: 8),
+              Text('${groupe.receveurActuel!.nom} reçoit ce tour', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 14)),
+            ]),
+          ),
+        ],
+        SizedBox(height: 10),
+        Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+          Text('Cotisations', style: TextStyle(color: Colors.white70, fontSize: 11)),
+          Text('$nbPaies / ${groupe.membres.length} ont payé', style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w500)),
+        ]),
+        SizedBox(height: 4),
         ClipRRect(
-          borderRadius: BorderRadius.circular(10),
+          borderRadius: BorderRadius.circular(6),
           child: LinearProgressIndicator(
-            value: groupe.membres.isEmpty ? 0 : paye / groupe.membres.length,
-            backgroundColor: Colors.white30,
+            value: progression,
+            backgroundColor: Colors.white24,
             valueColor: AlwaysStoppedAnimation<Color>(Colors.greenAccent),
-            minHeight: 8,
+            minHeight: 7,
           ),
         ),
-        SizedBox(height: 4),
-        Text('$paye / ${groupe.membres.length} ont payé', style: TextStyle(color: Colors.white70, fontSize: 12)),
+        if (groupe.estTermine) ...[
+          SizedBox(height: 10),
+          Container(
+            padding: EdgeInsets.all(8),
+            decoration: BoxDecoration(color: Colors.greenAccent.withOpacity(0.2), borderRadius: BorderRadius.circular(8)),
+            child: Text('🎉 Ce Natt est terminé ! Tout le monde a reçu.', style: TextStyle(color: Colors.white, fontSize: 12), textAlign: TextAlign.center),
+          ),
+        ],
       ]),
     );
   }
 
   Widget _stat(String emoji, String val, String label) {
     return Column(children: [
-      Text(emoji, style: TextStyle(fontSize: 22)),
-      Text(val, style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16)),
-      Text(label, style: TextStyle(color: Colors.white70, fontSize: 11)),
+      Text(emoji, style: TextStyle(fontSize: 18)),
+      Text(val, style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 14)),
+      Text(label, style: TextStyle(color: Colors.white70, fontSize: 10)),
     ]);
   }
 
   Widget _buildMembreCard(Membre membre, int index) {
     final groupe = widget.groupe;
-    final estTour = groupe.tirageEffectue && index == groupe.tourActuel % groupe.membres.length;
-    final aPaye = membre.paiements.isNotEmpty && membre.paiements.last;
-    return Dismissible(
-      key: Key(membre.id ?? index.toString()),
-      direction: DismissDirection.endToStart,
-      background: Container(
-        alignment: Alignment.centerRight,
-        padding: EdgeInsets.only(right: 20),
-        color: Colors.red,
-        child: Icon(Icons.delete, color: Colors.white),
+    final tour = groupe.tourActuel;
+    final estReceveur = groupe.tirageEffectue && membre.ordre - 1 == tour;
+    final aPaye = membre.aPaye(tour);
+    final aDejaRecu = groupe.tirageEffectue && membre.ordre - 1 < tour;
+
+    return Container(
+      margin: EdgeInsets.only(bottom: 10),
+      padding: EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: estReceveur ? Color(0xFFFFFDE7) : Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: estReceveur ? Colors.amber.shade200 : Colors.grey.shade100),
       ),
-      confirmDismiss: (_) async {
-        return await showDialog(
-          context: context,
-          builder: (_) => AlertDialog(
-            title: Text('Supprimer ?'),
-            content: Text('Supprimer "${membre.nom}" du groupe ?'),
-            actions: [
-              TextButton(onPressed: () => Navigator.pop(context, false), child: Text('Annuler')),
-              ElevatedButton(
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-                onPressed: () => Navigator.pop(context, true),
-                child: Text('Supprimer', style: TextStyle(color: Colors.white)),
-              ),
+      child: Row(children: [
+        Stack(children: [
+          CircleAvatar(
+            radius: 22,
+            backgroundColor: estReceveur ? Colors.amber : kBluLight,
+            child: Text('${membre.ordre}', style: TextStyle(color: estReceveur ? Colors.white : kBlue, fontWeight: FontWeight.w600, fontSize: 15)),
+          ),
+          if (aDejaRecu) Positioned(right: 0, bottom: 0,
+            child: Container(width: 14, height: 14, decoration: BoxDecoration(color: Colors.green, shape: BoxShape.circle),
+              child: Icon(Icons.check, color: Colors.white, size: 10)),
+          ),
+        ]),
+        SizedBox(width: 12),
+        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            Text(membre.nom, style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14, color: kNoir)),
+            if (estReceveur) ...[
+              SizedBox(width: 6),
+              Container(padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2), decoration: BoxDecoration(color: Colors.amber, borderRadius: BorderRadius.circular(6)),
+                child: Text('Reçoit', style: TextStyle(fontSize: 10, color: Colors.white, fontWeight: FontWeight.w600))),
             ],
-          ),
-        );
-      },
-      onDismissed: (_) async {
-        await supabase.from('membres').delete().eq('id', membre.id!);
-        setState(() {
-          widget.groupe.membres.removeAt(index);
-          widget.groupe.tirageEffectue = false;
-        });
-        widget.onUpdate();
-      },
-      child: Card(
-        margin: EdgeInsets.symmetric(horizontal: 16, vertical: 5),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-        color: estTour ? Colors.amber[50] : null,
-        child: ListTile(
-          leading: CircleAvatar(
-            backgroundColor: estTour ? Colors.amber : Color(0xFF006633),
-            child: Text('${membre.ordre}', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-          ),
-          title: Text(membre.nom, style: TextStyle(fontWeight: FontWeight.bold)),
-          subtitle: Text(membre.telephone),
-          trailing: Row(mainAxisSize: MainAxisSize.min, children: [
-            if (estTour) Container(
-              padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-              decoration: BoxDecoration(color: Colors.amber, borderRadius: BorderRadius.circular(8)),
-              child: Text('🎯', style: TextStyle(fontSize: 12)),
-            ),
-            SizedBox(width: 6),
-            GestureDetector(
-              onTap: () => _togglePaiement(membre, aPaye),
-              child: Icon(aPaye ? Icons.check_circle : Icons.radio_button_unchecked, color: aPaye ? Colors.green : Colors.grey, size: 28),
-            ),
+            if (aDejaRecu) ...[
+              SizedBox(width: 6),
+              Container(padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2), decoration: BoxDecoration(color: Colors.green.shade50, borderRadius: BorderRadius.circular(6)),
+                child: Text('A reçu ✓', style: TextStyle(fontSize: 10, color: Colors.green.shade700))),
+            ],
           ]),
+          Text(membre.telephone, style: TextStyle(color: kGris, fontSize: 12)),
+          Text(aPaye ? '✅ Cotisation payée' : '⏳ En attente de paiement', style: TextStyle(fontSize: 11, color: aPaye ? Colors.green : Colors.orange)),
+        ])),
+        GestureDetector(
+          onTap: () => _togglePaiement(membre, aPaye),
+          child: Container(
+            width: 36, height: 36,
+            decoration: BoxDecoration(
+              color: aPaye ? Colors.green : Colors.grey.shade100,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: aPaye ? Colors.green : Colors.grey.shade300),
+            ),
+            child: Icon(aPaye ? Icons.check_rounded : Icons.circle_outlined, color: aPaye ? Colors.white : kGris, size: 20),
+          ),
         ),
-      ),
+      ]),
     );
   }
 
   Future<void> _togglePaiement(Membre membre, bool aPaye) async {
+    final tour = widget.groupe.tourActuel;
     try {
-      final tourActuel = widget.groupe.tourActuel;
-      final existing = await supabase.from('paiements').select().eq('membre_id', membre.id!).eq('tour', tourActuel);
+      final existing = await supabase.from('paiements').select().eq('membre_id', membre.id!).eq('tour', tour);
       if ((existing as List).isEmpty) {
-        await supabase.from('paiements').insert({'membre_id': membre.id, 'tour': tourActuel, 'paye': true, 'date_paiement': DateTime.now().toIso8601String()});
+        final result = await supabase.from('paiements').insert({
+          'membre_id': membre.id, 'tour': tour, 'paye': true, 'date_paiement': DateTime.now().toIso8601String(),
+        }).select();
+        setState(() => membre.paiements.add(Paiement(id: result[0]['id'], membreId: membre.id!, tour: tour, paye: true, date: DateTime.now())));
+        await envoyerNotification('✅ Cotisation reçue', '${membre.nom} a payé pour ${widget.groupe.nom}');
       } else {
-        await supabase.from('paiements').update({'paye': !aPaye}).eq('membre_id', membre.id!).eq('tour', tourActuel);
+        await supabase.from('paiements').update({'paye': !aPaye}).eq('membre_id', membre.id!).eq('tour', tour);
+        setState(() {
+          final p = membre.paiements.firstWhere((p) => p.tour == tour);
+          p.paye = !aPaye;
+        });
       }
-      setState(() {
-        if (membre.paiements.isEmpty) membre.paiements.add(!aPaye);
-        else membre.paiements[membre.paiements.length - 1] = !aPaye;
-      });
-      if (!aPaye) await envoyerNotification('✅ Paiement confirmé', '${membre.nom} a cotisé pour ${widget.groupe.nom}');
       widget.onUpdate();
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Erreur: $e')));
@@ -528,15 +778,17 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
       return;
     }
     String message = '🤝 *NattPro - ${groupe.nom}*\n\n';
-    message += '💰 Montant : ${groupe.montant.toStringAsFixed(0)} FCFA\n';
-    message += '📅 Fréquence : ${groupe.frequence}\n\n';
+    message += '💰 Cotisation : ${groupe.montant.toStringAsFixed(0)} FCFA\n';
+    message += '📅 Fréquence : ${groupe.frequence}\n';
+    message += '👥 ${groupe.membres.length} membres\n\n';
     message += '🎯 *Ordre du tirage :*\n';
-    for (final membre in groupe.membres) {
-      message += '${membre.ordre}. ${membre.nom} - ${membre.telephone}\n';
+    for (final m in groupe.membres) {
+      final aRecu = m.ordre - 1 < groupe.tourActuel;
+      final recoit = m.ordre - 1 == groupe.tourActuel;
+      message += '${m.ordre}. ${m.nom}${recoit ? ' 🎯' : aRecu ? ' ✅' : ''}\n';
     }
     message += '\n_Partagé via NattPro_ 🇸🇳';
-    final encoded = Uri.encodeComponent(message);
-    final url = Uri.parse('whatsapp://send?text=$encoded');
+    final url = Uri.parse('whatsapp://send?text=${Uri.encodeComponent(message)}');
     if (await canLaunchUrl(url)) {
       await launchUrl(url);
     } else {
@@ -544,22 +796,20 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
     }
   }
 
-  void _voirHistorique() {
-    Navigator.push(context, MaterialPageRoute(
-      builder: (_) => HistoriqueScreen(groupe: widget.groupe),
-    ));
-  }
-
   Future<void> _tirage() async {
+    if (widget.groupe.estTermine) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Ce Natt est déjà terminé !')));
+      return;
+    }
     showDialog(
       context: context,
       builder: (_) => AlertDialog(
         title: Text('🎲 Tirage au sort'),
-        content: Text('Mélanger les ${widget.groupe.membres.length} membres ?'),
+        content: Text('Mélanger aléatoirement les ${widget.groupe.membres.length} membres ?'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context), child: Text('Annuler')),
           ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Color(0xFF006633)),
+            style: ElevatedButton.styleFrom(backgroundColor: kBlue),
             onPressed: () async {
               Navigator.pop(context);
               widget.groupe.membres.shuffle(Random());
@@ -571,9 +821,9 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
               setState(() => widget.groupe.tirageEffectue = true);
               widget.onUpdate();
               _afficherResultat();
-              await envoyerNotification('🎲 Tirage effectué !', 'L\'ordre du ${widget.groupe.nom} est défini !');
+              await envoyerNotification('🎲 Tirage effectué !', 'L\'ordre de ${widget.groupe.nom} est défini !');
             },
-            child: Text('Tirer !', style: TextStyle(color: Colors.white)),
+            child: Text('Lancer le tirage', style: TextStyle(color: Colors.white)),
           ),
         ],
       ),
@@ -584,20 +834,16 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
     showDialog(
       context: context,
       builder: (_) => AlertDialog(
-        title: Text('🎉 Résultat du tirage'),
+        title: Text('🎉 Ordre du tirage'),
         content: SingleChildScrollView(
           child: Column(mainAxisSize: MainAxisSize.min, children: widget.groupe.membres.map((m) => ListTile(
-            leading: CircleAvatar(backgroundColor: Color(0xFF006633), child: Text('${m.ordre}', style: TextStyle(color: Colors.white))),
+            leading: CircleAvatar(backgroundColor: kBluLight, child: Text('${m.ordre}', style: TextStyle(color: kBlue, fontWeight: FontWeight.w600))),
             title: Text(m.nom),
             subtitle: Text(m.telephone),
           )).toList()),
         ),
         actions: [
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Color(0xFF006633)),
-            onPressed: () => Navigator.pop(context),
-            child: Text('OK', style: TextStyle(color: Colors.white)),
-          ),
+          ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: kBlue), onPressed: () => Navigator.pop(context), child: Text('OK', style: TextStyle(color: Colors.white))),
         ],
       ),
     );
@@ -610,19 +856,24 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
       builder: (_) => Padding(
         padding: EdgeInsets.all(20),
         child: Column(mainAxisSize: MainAxisSize.min, children: [
-          Text('Ajouter un membre', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-          SizedBox(height: 20),
+          Container(width: 40, height: 4, decoration: BoxDecoration(color: Colors.grey.shade300, borderRadius: BorderRadius.circular(2))),
+          SizedBox(height: 16),
+          Text('Ajouter un membre', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600)),
+          SizedBox(height: 16),
           ListTile(
-            leading: CircleAvatar(backgroundColor: Color(0xFF006633), child: Icon(Icons.contacts, color: Colors.white)),
+            leading: CircleAvatar(backgroundColor: kBluLight, child: Icon(Icons.contacts, color: kBlue)),
             title: Text('Depuis mes contacts'),
+            subtitle: Text('Accéder au répertoire'),
             onTap: () { Navigator.pop(context); _ajouterDepuisContacts(); },
           ),
           Divider(),
           ListTile(
-            leading: CircleAvatar(backgroundColor: Colors.blue, child: Icon(Icons.person_add, color: Colors.white)),
-            title: Text('Nouveau contact'),
+            leading: CircleAvatar(backgroundColor: kBluLight, child: Icon(Icons.person_add, color: kBlue)),
+            title: Text('Saisir manuellement'),
+            subtitle: Text('Nom et numéro'),
             onTap: () { Navigator.pop(context); _ajouterManuellement(); },
           ),
+          SizedBox(height: 8),
         ]),
       ),
     );
@@ -639,18 +890,14 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
       context: context,
       builder: (_) => AlertDialog(
         title: Text('Choisir un contact'),
-        content: SizedBox(
-          width: double.maxFinite, height: 400,
+        content: SizedBox(width: double.maxFinite, height: 400,
           child: ListView.builder(
             itemCount: contacts.length,
             itemBuilder: (context, index) {
               final contact = contacts[index];
               final tel = contact.phones.isNotEmpty ? contact.phones.first.number : '';
               return ListTile(
-                leading: CircleAvatar(
-                  backgroundColor: Color(0xFF006633),
-                  child: Text(contact.displayName.isNotEmpty ? contact.displayName[0].toUpperCase() : '?', style: TextStyle(color: Colors.white)),
-                ),
+                leading: CircleAvatar(backgroundColor: kBluLight, child: Text(contact.displayName.isNotEmpty ? contact.displayName[0].toUpperCase() : '?', style: TextStyle(color: kBlue))),
                 title: Text(contact.displayName),
                 subtitle: Text(tel),
                 onTap: () { Navigator.pop(context); _sauvegarderMembre(contact.displayName, tel); },
@@ -678,10 +925,8 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
         actions: [
           TextButton(onPressed: () => Navigator.pop(context), child: Text('Annuler')),
           ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Color(0xFF006633)),
-            onPressed: () {
-              if (nomCtrl.text.isNotEmpty) { Navigator.pop(context); _sauvegarderMembre(nomCtrl.text, telCtrl.text); }
-            },
+            style: ElevatedButton.styleFrom(backgroundColor: kBlue),
+            onPressed: () { if (nomCtrl.text.isNotEmpty) { Navigator.pop(context); _sauvegarderMembre(nomCtrl.text, telCtrl.text); } },
             child: Text('Ajouter', style: TextStyle(color: Colors.white)),
           ),
         ],
@@ -703,94 +948,5 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Erreur: $e')));
     }
-  }
-}
-
-// ═══════════════════════════════
-// HISTORIQUE DES PAIEMENTS
-// ═══════════════════════════════
-
-class HistoriqueScreen extends StatefulWidget {
-  final GroupeNatt groupe;
-  HistoriqueScreen({required this.groupe});
-  @override
-  _HistoriqueScreenState createState() => _HistoriqueScreenState();
-}
-
-class _HistoriqueScreenState extends State<HistoriqueScreen> {
-  List<Map<String, dynamic>> historique = [];
-  bool chargement = true;
-
-  @override
-  void initState() {
-    super.initState();
-    _chargerHistorique();
-  }
-
-  Future<void> _chargerHistorique() async {
-    setState(() => chargement = true);
-    try {
-      final membres = widget.groupe.membres;
-      List<Map<String, dynamic>> result = [];
-      for (final membre in membres) {
-        if (membre.id == null) continue;
-        final paiements = await supabase.from('paiements').select().eq('membre_id', membre.id!).order('tour');
-        for (final p in paiements as List) {
-          result.add({
-            'membre': membre.nom,
-            'tour': p['tour'],
-            'paye': p['paye'],
-            'date': p['date_paiement'],
-          });
-        }
-      }
-      result.sort((a, b) => (b['tour'] as int).compareTo(a['tour'] as int));
-      setState(() { historique = result; chargement = false; });
-    } catch (e) {
-      setState(() => chargement = false);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        backgroundColor: Color(0xFF006633),
-        title: Text('Historique — ${widget.groupe.nom}', style: TextStyle(color: Colors.white)),
-        iconTheme: IconThemeData(color: Colors.white),
-      ),
-      body: chargement
-          ? Center(child: CircularProgressIndicator(color: Color(0xFF006633)))
-          : historique.isEmpty
-              ? Center(child: Text('Aucun paiement enregistré', style: TextStyle(color: Colors.grey)))
-              : ListView.builder(
-                  padding: EdgeInsets.all(16),
-                  itemCount: historique.length,
-                  itemBuilder: (context, index) {
-                    final h = historique[index];
-                    final date = h['date'] != null ? DateTime.parse(h['date']) : null;
-                    return Card(
-                      margin: EdgeInsets.only(bottom: 8),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                      child: ListTile(
-                        leading: CircleAvatar(
-                          backgroundColor: h['paye'] ? Colors.green : Colors.red,
-                          child: Icon(h['paye'] ? Icons.check : Icons.close, color: Colors.white),
-                        ),
-                        title: Text(h['membre'], style: TextStyle(fontWeight: FontWeight.bold)),
-                        subtitle: Text('Tour ${h['tour'] + 1}${date != null ? ' • ${date.day}/${date.month}/${date.year}' : ''}'),
-                        trailing: Container(
-                          padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                          decoration: BoxDecoration(
-                            color: h['paye'] ? Colors.green[50] : Colors.red[50],
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: Text(h['paye'] ? 'Payé ✅' : 'Impayé ❌', style: TextStyle(color: h['paye'] ? Colors.green : Colors.red, fontWeight: FontWeight.bold, fontSize: 12)),
-                        ),
-                      ),
-                    );
-                  },
-                ),
-    );
   }
 }
