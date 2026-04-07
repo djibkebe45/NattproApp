@@ -5,6 +5,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'supabase_config.dart';
+import 'auth_screen.dart';
 import 'dart:math';
 
 final FlutterLocalNotificationsPlugin notificationsPlugin =
@@ -37,7 +38,6 @@ void main() async {
 
 final supabase = Supabase.instance.client;
 
-// ── COULEURS WAVE ──
 const kBlue = Color(0xFF1B4FD8);
 const kBluLight = Color(0xFFEEF2FF);
 const kNoir = Color(0xFF111111);
@@ -52,16 +52,11 @@ class NattProApp extends StatelessWidget {
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: kBlue),
         useMaterial3: true,
-        fontFamily: 'sans-serif',
       ),
-      home: HomeScreen(),
+      home: supabase.auth.currentSession != null ? HomeScreen() : AuthScreen(),
     );
   }
 }
-
-// ═══════════════════════════════
-// MODÈLES
-// ═══════════════════════════════
 
 class Paiement {
   String? id;
@@ -100,7 +95,6 @@ class GroupeNatt {
     frequence: json['frequence'], dateDebut: DateTime.parse(json['date_debut']),
     tirageEffectue: json['tirage_effectue'] ?? false, membres: [],
   );
-
   int get tourActuel {
     final maintenant = DateTime.now();
     int tours = 0;
@@ -111,23 +105,11 @@ class GroupeNatt {
     }
     return tours.clamp(0, membres.isEmpty ? 0 : membres.length - 1);
   }
-
-  // Qui reçoit ce tour
-  Membre? get receveurActuel => membres.isNotEmpty && tirageEffectue
-      ? membres[tourActuel % membres.length]
-      : null;
-
-  // Natt terminé si tous ont reçu
+  Membre? get receveurActuel => membres.isNotEmpty && tirageEffectue ? membres[tourActuel % membres.length] : null;
   bool get estTermine => tirageEffectue && membres.isNotEmpty && tourActuel >= membres.length - 1;
-
   double get cagnotte => membres.length * montant;
-
   int get nbPayesTourActuel => membres.where((m) => m.aPaye(tourActuel)).length;
 }
-
-// ═══════════════════════════════
-// ÉCRAN ACCUEIL
-// ═══════════════════════════════
 
 class HomeScreen extends StatefulWidget {
   @override
@@ -148,7 +130,11 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _chargerGroupes() async {
     setState(() => chargement = true);
     try {
-      final data = await supabase.from('groupes').select('*, membres(*, paiements(*))').order('created_at');
+      final data = await supabase
+          .from('groupes')
+          .select('*, membres(*, paiements(*))')
+          .eq('user_id', supabase.auth.currentUser!.id)
+          .order('created_at');
       final liste = (data as List).map((g) {
         final groupe = GroupeNatt.fromJson(g);
         groupe.membres = (g['membres'] as List).map((m) {
@@ -169,6 +155,11 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  Future<void> _deconnecter() async {
+    await supabase.auth.signOut();
+    Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => AuthScreen()));
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -185,17 +176,11 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Widget _buildNavBar() {
     return Container(
-      decoration: BoxDecoration(
-        color: Colors.white,
-        border: Border(top: BorderSide(color: Colors.grey.shade200)),
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceAround,
-        children: [
-          _navItem(0, Icons.home_rounded, 'Accueil'),
-          _navItem(1, Icons.receipt_long_rounded, 'Paiements'),
-        ],
-      ),
+      decoration: BoxDecoration(color: Colors.white, border: Border(top: BorderSide(color: Colors.grey.shade200))),
+      child: Row(mainAxisAlignment: MainAxisAlignment.spaceAround, children: [
+        _navItem(0, Icons.home_rounded, 'Accueil'),
+        _navItem(1, Icons.receipt_long_rounded, 'Paiements'),
+      ]),
     );
   }
 
@@ -217,25 +202,27 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Widget _buildAccueil() {
     final totalCagnotte = groupes.fold(0.0, (sum, g) => sum + g.cagnotte);
+    final email = supabase.auth.currentUser?.email ?? '';
     return CustomScrollView(
       slivers: [
         SliverAppBar(
-          expandedHeight: 160,
+          expandedHeight: 170,
           pinned: true,
           backgroundColor: kBlue,
+          actions: [
+            IconButton(icon: Icon(Icons.notifications_outlined, color: Colors.white), onPressed: _testerNotification),
+            IconButton(icon: Icon(Icons.refresh, color: Colors.white), onPressed: _chargerGroupes),
+            IconButton(icon: Icon(Icons.logout, color: Colors.white), onPressed: _deconnecter),
+          ],
           flexibleSpace: FlexibleSpaceBar(
             background: Container(
               color: kBlue,
               padding: EdgeInsets.fromLTRB(20, 60, 20, 16),
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                  Text('NattPro 🤝', style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w600)),
-                  Row(children: [
-                    IconButton(icon: Icon(Icons.notifications_outlined, color: Colors.white), onPressed: _testerNotification),
-                    IconButton(icon: Icon(Icons.refresh, color: Colors.white), onPressed: _chargerGroupes),
-                  ]),
-                ]),
-                SizedBox(height: 8),
+                SizedBox(height: 10),
+                Text('NattPro 🤝', style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w600)),
+                Text(email, style: TextStyle(color: Colors.white60, fontSize: 11)),
+                SizedBox(height: 10),
                 Container(
                   padding: EdgeInsets.all(14),
                   decoration: BoxDecoration(color: Colors.white.withOpacity(0.15), borderRadius: BorderRadius.circular(14)),
@@ -314,11 +301,7 @@ class _HomeScreenState extends State<HomeScreen> {
         child: Container(
           margin: EdgeInsets.only(bottom: 12),
           padding: EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: Colors.grey.shade100),
-          ),
+          decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(16), border: Border.all(color: Colors.grey.shade100)),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Row(children: [
               Container(
@@ -336,7 +319,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 Text('FCFA', style: TextStyle(color: kGris, fontSize: 11)),
               ]),
             ]),
-            SizedBox(height: 12),
+            SizedBox(height: 10),
             if (receveur != null) Container(
               padding: EdgeInsets.symmetric(horizontal: 10, vertical: 6),
               decoration: BoxDecoration(color: kBluLight, borderRadius: BorderRadius.circular(8)),
@@ -384,62 +367,67 @@ class _HomeScreenState extends State<HomeScreen> {
         SliverAppBar(
           pinned: true,
           backgroundColor: kBlue,
-          title: Text('Historique', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+          title: Text('Historique des paiements', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
         ),
-        SliverPadding(
-          padding: EdgeInsets.all(16),
-          sliver: SliverList(
-            delegate: SliverChildBuilderDelegate(
-              (context, index) {
-                final groupe = groupes[index];
-                return Container(
-                  margin: EdgeInsets.only(bottom: 12),
-                  padding: EdgeInsets.all(16),
-                  decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(16)),
-                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    Text(groupe.nom, style: TextStyle(fontWeight: FontWeight.w600, fontSize: 15, color: kNoir)),
-                    SizedBox(height: 10),
-                    ...groupe.membres.map((m) => Padding(
-                      padding: EdgeInsets.symmetric(vertical: 4),
-                      child: Row(children: [
-                        CircleAvatar(radius: 14, backgroundColor: kBluLight, child: Text(m.nom[0], style: TextStyle(color: kBlue, fontSize: 11, fontWeight: FontWeight.w600))),
-                        SizedBox(width: 10),
-                        Expanded(child: Text(m.nom, style: TextStyle(fontSize: 13))),
-                        ...List.generate(groupe.membres.length, (tour) {
-                          final paye = m.aPaye(tour);
-                          final recoit = groupe.tirageEffectue && m.ordre - 1 == tour;
-                          return Container(
-                            margin: EdgeInsets.only(left: 3),
-                            width: 22, height: 22,
-                            decoration: BoxDecoration(
-                              color: recoit ? Colors.amber.shade100 : paye ? Color(0xFFE8F5E9) : Colors.grey.shade100,
-                              borderRadius: BorderRadius.circular(6),
-                              border: Border.all(color: recoit ? Colors.amber : paye ? Colors.green.shade300 : Colors.grey.shade200),
-                            ),
-                            child: Center(child: Icon(
-                              recoit ? Icons.star_rounded : paye ? Icons.check_rounded : Icons.remove,
-                              size: 12,
-                              color: recoit ? Colors.amber.shade700 : paye ? Colors.green : Colors.grey.shade400,
-                            )),
-                          );
-                        }),
-                      ]),
-                    )).toList(),
-                    SizedBox(height: 8),
-                    Row(children: [
-                      _legendeItem(Colors.amber, '⭐ Reçoit'),
-                      SizedBox(width: 12),
-                      _legendeItem(Colors.green, '✓ Payé'),
-                      SizedBox(width: 12),
-                      _legendeItem(Colors.grey, '— Non payé'),
-                    ]),
-                  ]),
-                );
-              },
-              childCount: groupes.length,
-            ),
-          ),
-        ),
+        groupes.isEmpty
+            ? SliverFillRemaining(child: Center(child: Text('Aucun groupe', style: TextStyle(color: kGris))))
+            : SliverPadding(
+                padding: EdgeInsets.all(16),
+                sliver: SliverList(
+                  delegate: SliverChildBuilderDelegate(
+                    (context, index) {
+                      final groupe = groupes[index];
+                      return Container(
+                        margin: EdgeInsets.only(bottom: 12),
+                        padding: EdgeInsets.all(16),
+                        decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(16)),
+                        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                          Text(groupe.nom, style: TextStyle(fontWeight: FontWeight.w600, fontSize: 15, color: kNoir)),
+                          SizedBox(height: 4),
+                          Text('Tour ${groupe.tourActuel + 1} sur ${groupe.membres.length}', style: TextStyle(color: kGris, fontSize: 12)),
+                          SizedBox(height: 12),
+                          ...groupe.membres.map((m) => Padding(
+                            padding: EdgeInsets.symmetric(vertical: 5),
+                            child: Row(children: [
+                              CircleAvatar(radius: 16, backgroundColor: kBluLight,
+                                child: Text(m.nom[0], style: TextStyle(color: kBlue, fontSize: 12, fontWeight: FontWeight.w600))),
+                              SizedBox(width: 10),
+                              Expanded(child: Text(m.nom, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500))),
+                              ...List.generate(groupe.membres.length, (tour) {
+                                final paye = m.aPaye(tour);
+                                final recoit = groupe.tirageEffectue && m.ordre - 1 == tour;
+                                return Container(
+                                  margin: EdgeInsets.only(left: 3),
+                                  width: 24, height: 24,
+                                  decoration: BoxDecoration(
+                                    color: recoit ? Colors.amber.shade100 : paye ? Color(0xFFE8F5E9) : Colors.grey.shade100,
+                                    borderRadius: BorderRadius.circular(6),
+                                    border: Border.all(color: recoit ? Colors.amber : paye ? Colors.green.shade300 : Colors.grey.shade200),
+                                  ),
+                                  child: Center(child: Icon(
+                                    recoit ? Icons.star_rounded : paye ? Icons.check_rounded : Icons.remove,
+                                    size: 13,
+                                    color: recoit ? Colors.amber.shade700 : paye ? Colors.green : Colors.grey.shade400,
+                                  )),
+                                );
+                              }),
+                            ]),
+                          )).toList(),
+                          SizedBox(height: 10),
+                          Row(children: [
+                            _legendeItem(Colors.amber, 'Reçoit'),
+                            SizedBox(width: 12),
+                            _legendeItem(Colors.green, 'Payé'),
+                            SizedBox(width: 12),
+                            _legendeItem(Colors.grey, 'En attente'),
+                          ]),
+                        ]),
+                      );
+                    },
+                    childCount: groupes.length,
+                  ),
+                ),
+              ),
       ],
     );
   }
@@ -460,10 +448,6 @@ class _HomeScreenState extends State<HomeScreen> {
     Navigator.push(context, MaterialPageRoute(builder: (_) => CreerGroupeScreen(onCreer: _chargerGroupes)));
   }
 }
-
-// ═══════════════════════════════
-// CRÉER UN GROUPE
-// ═══════════════════════════════
 
 class CreerGroupeScreen extends StatefulWidget {
   final VoidCallback onCreer;
@@ -491,29 +475,37 @@ class _CreerGroupeScreenState extends State<CreerGroupeScreen> {
       body: SingleChildScrollView(
         padding: EdgeInsets.all(20),
         child: Column(children: [
-          _card(children: [
-            _champ(_nomCtrl, 'Nom du groupe', Icons.group),
-            SizedBox(height: 14),
-            _champ(_montantCtrl, 'Montant de cotisation (FCFA)', Icons.attach_money, type: TextInputType.number),
-            SizedBox(height: 14),
-            DropdownButtonFormField<String>(
-              value: _frequence,
-              decoration: InputDecoration(labelText: 'Fréquence', prefixIcon: Icon(Icons.repeat), border: OutlineInputBorder(borderRadius: BorderRadius.circular(10))),
-              items: ['Hebdomadaire', 'Mensuel'].map((f) => DropdownMenuItem(value: f, child: Text(f))).toList(),
-              onChanged: (val) => setState(() => _frequence = val!),
-            ),
-            SizedBox(height: 14),
-            ListTile(
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10), side: BorderSide(color: Colors.grey.shade300)),
-              leading: Icon(Icons.calendar_today, color: kBlue),
-              title: Text('Date de début'),
-              subtitle: Text('${_dateDebut.day}/${_dateDebut.month}/${_dateDebut.year}'),
-              onTap: () async {
-                final date = await showDatePicker(context: context, initialDate: _dateDebut, firstDate: DateTime(2024), lastDate: DateTime(2030));
-                if (date != null) setState(() => _dateDebut = date);
-              },
-            ),
-          ]),
+          Container(
+            padding: EdgeInsets.all(16),
+            decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(16)),
+            child: Column(children: [
+              _champ(_nomCtrl, 'Nom du groupe', Icons.group),
+              SizedBox(height: 14),
+              _champ(_montantCtrl, 'Montant de cotisation (FCFA)', Icons.attach_money, type: TextInputType.number),
+              SizedBox(height: 14),
+              DropdownButtonFormField<String>(
+                value: _frequence,
+                decoration: InputDecoration(
+                  labelText: 'Fréquence',
+                  prefixIcon: Icon(Icons.repeat, color: kBlue),
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                ),
+                items: ['Hebdomadaire', 'Mensuel'].map((f) => DropdownMenuItem(value: f, child: Text(f))).toList(),
+                onChanged: (val) => setState(() => _frequence = val!),
+              ),
+              SizedBox(height: 14),
+              ListTile(
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10), side: BorderSide(color: Colors.grey.shade300)),
+                leading: Icon(Icons.calendar_today, color: kBlue),
+                title: Text('Date de début'),
+                subtitle: Text('${_dateDebut.day}/${_dateDebut.month}/${_dateDebut.year}'),
+                onTap: () async {
+                  final date = await showDatePicker(context: context, initialDate: _dateDebut, firstDate: DateTime(2024), lastDate: DateTime(2030));
+                  if (date != null) setState(() => _dateDebut = date);
+                },
+              ),
+            ]),
+          ),
           SizedBox(height: 24),
           SizedBox(
             width: double.infinity, height: 52,
@@ -530,18 +522,14 @@ class _CreerGroupeScreenState extends State<CreerGroupeScreen> {
     );
   }
 
-  Widget _card({required List<Widget> children}) {
-    return Container(
-      padding: EdgeInsets.all(16),
-      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(16)),
-      child: Column(children: children),
-    );
-  }
-
   Widget _champ(TextEditingController ctrl, String label, IconData icon, {TextInputType type = TextInputType.text}) {
     return TextField(
       controller: ctrl, keyboardType: type,
-      decoration: InputDecoration(labelText: label, prefixIcon: Icon(icon, color: kBlue), border: OutlineInputBorder(borderRadius: BorderRadius.circular(10))),
+      decoration: InputDecoration(
+        labelText: label,
+        prefixIcon: Icon(icon, color: kBlue),
+        border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+      ),
     );
   }
 
@@ -550,9 +538,12 @@ class _CreerGroupeScreenState extends State<CreerGroupeScreen> {
     setState(() => _enregistrement = true);
     try {
       await supabase.from('groupes').insert({
-        'nom': _nomCtrl.text, 'montant': double.tryParse(_montantCtrl.text) ?? 0,
-        'frequence': _frequence, 'date_debut': _dateDebut.toIso8601String().split('T')[0],
+        'nom': _nomCtrl.text,
+        'montant': double.tryParse(_montantCtrl.text) ?? 0,
+        'frequence': _frequence,
+        'date_debut': _dateDebut.toIso8601String().split('T')[0],
         'tirage_effectue': false,
+        'user_id': supabase.auth.currentUser!.id,
       });
       widget.onCreer();
       Navigator.pop(context);
@@ -562,10 +553,6 @@ class _CreerGroupeScreenState extends State<CreerGroupeScreen> {
     }
   }
 }
-
-// ═══════════════════════════════
-// DÉTAIL GROUPE
-// ═══════════════════════════════
 
 class DetailGroupeScreen extends StatefulWidget {
   final GroupeNatt groupe;
@@ -602,7 +589,7 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
             child: Row(children: [
               Icon(Icons.shuffle, color: Colors.orange),
               SizedBox(width: 10),
-              Expanded(child: Text('Lancez le tirage au sort pour définir l\'ordre', style: TextStyle(color: Colors.orange.shade800, fontSize: 13))),
+              Expanded(child: Text('Lancez le tirage pour définir l\'ordre', style: TextStyle(color: Colors.orange.shade800, fontSize: 13))),
             ]),
           ),
         Expanded(
@@ -626,19 +613,17 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
 
   Widget _buildResume() {
     final groupe = widget.groupe;
-    final tour = groupe.tourActuel;
     final nbPaies = groupe.nbPayesTourActuel;
     final progression = groupe.membres.isEmpty ? 0.0 : nbPaies / groupe.membres.length;
     return Container(
-      margin: EdgeInsets.all(16),
-      padding: EdgeInsets.all(16),
+      margin: EdgeInsets.all(16), padding: EdgeInsets.all(16),
       decoration: BoxDecoration(color: kBlue, borderRadius: BorderRadius.circular(16)),
       child: Column(children: [
         Row(mainAxisAlignment: MainAxisAlignment.spaceAround, children: [
           _stat('👥', '${groupe.membres.length}', 'Membres'),
-          _stat('💰', '${groupe.montant.toStringAsFixed(0)}', 'FCFA/tour'),
+          _stat('💰', '${groupe.montant.toStringAsFixed(0)}', 'FCFA'),
           _stat('🏆', '${groupe.cagnotte.toStringAsFixed(0)}', 'Cagnotte'),
-          _stat('📅', '${tour + 1}/${groupe.membres.length}', 'Tour'),
+          _stat('📅', '${groupe.tourActuel + 1}/${groupe.membres.length}', 'Tour'),
         ]),
         if (groupe.receveurActuel != null) ...[
           SizedBox(height: 12),
@@ -654,7 +639,7 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
         ],
         SizedBox(height: 10),
         Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-          Text('Cotisations', style: TextStyle(color: Colors.white70, fontSize: 11)),
+          Text('Cotisations du tour', style: TextStyle(color: Colors.white70, fontSize: 11)),
           Text('$nbPaies / ${groupe.membres.length} ont payé', style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w500)),
         ]),
         SizedBox(height: 4),
@@ -693,58 +678,84 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
     final estReceveur = groupe.tirageEffectue && membre.ordre - 1 == tour;
     final aPaye = membre.aPaye(tour);
     final aDejaRecu = groupe.tirageEffectue && membre.ordre - 1 < tour;
-
-    return Container(
-      margin: EdgeInsets.only(bottom: 10),
-      padding: EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: estReceveur ? Color(0xFFFFFDE7) : Colors.white,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: estReceveur ? Colors.amber.shade200 : Colors.grey.shade100),
+    return Dismissible(
+      key: Key(membre.id ?? index.toString()),
+      direction: DismissDirection.endToStart,
+      background: Container(
+        alignment: Alignment.centerRight, padding: EdgeInsets.only(right: 20),
+        decoration: BoxDecoration(color: Colors.red, borderRadius: BorderRadius.circular(14)),
+        child: Icon(Icons.delete, color: Colors.white),
       ),
-      child: Row(children: [
-        Stack(children: [
-          CircleAvatar(
-            radius: 22,
-            backgroundColor: estReceveur ? Colors.amber : kBluLight,
-            child: Text('${membre.ordre}', style: TextStyle(color: estReceveur ? Colors.white : kBlue, fontWeight: FontWeight.w600, fontSize: 15)),
-          ),
-          if (aDejaRecu) Positioned(right: 0, bottom: 0,
-            child: Container(width: 14, height: 14, decoration: BoxDecoration(color: Colors.green, shape: BoxShape.circle),
-              child: Icon(Icons.check, color: Colors.white, size: 10)),
+      confirmDismiss: (_) async => await showDialog(
+        context: context,
+        builder: (_) => AlertDialog(
+          title: Text('Supprimer ?'),
+          content: Text('Supprimer "${membre.nom}" ?'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context, false), child: Text('Annuler')),
+            ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: Colors.red), onPressed: () => Navigator.pop(context, true), child: Text('Supprimer', style: TextStyle(color: Colors.white))),
+          ],
+        ),
+      ),
+      onDismissed: (_) async {
+        await supabase.from('membres').delete().eq('id', membre.id!);
+        setState(() {
+          widget.groupe.membres.removeAt(index);
+          widget.groupe.tirageEffectue = false;
+        });
+        widget.onUpdate();
+      },
+      child: Container(
+        margin: EdgeInsets.only(bottom: 10),
+        padding: EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: estReceveur ? Color(0xFFFFFDE7) : Colors.white,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: estReceveur ? Colors.amber.shade200 : Colors.grey.shade100),
+        ),
+        child: Row(children: [
+          Stack(children: [
+            CircleAvatar(
+              radius: 22,
+              backgroundColor: estReceveur ? Colors.amber : kBluLight,
+              child: Text('${membre.ordre}', style: TextStyle(color: estReceveur ? Colors.white : kBlue, fontWeight: FontWeight.w600, fontSize: 15)),
+            ),
+            if (aDejaRecu) Positioned(right: 0, bottom: 0,
+              child: Container(width: 14, height: 14, decoration: BoxDecoration(color: Colors.green, shape: BoxShape.circle),
+                child: Icon(Icons.check, color: Colors.white, size: 10))),
+          ]),
+          SizedBox(width: 12),
+          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Row(children: [
+              Text(membre.nom, style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14, color: kNoir)),
+              if (estReceveur) ...[
+                SizedBox(width: 6),
+                Container(padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2), decoration: BoxDecoration(color: Colors.amber, borderRadius: BorderRadius.circular(6)),
+                  child: Text('Reçoit', style: TextStyle(fontSize: 10, color: Colors.white, fontWeight: FontWeight.w600))),
+              ],
+              if (aDejaRecu) ...[
+                SizedBox(width: 6),
+                Container(padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2), decoration: BoxDecoration(color: Colors.green.shade50, borderRadius: BorderRadius.circular(6)),
+                  child: Text('A reçu ✓', style: TextStyle(fontSize: 10, color: Colors.green.shade700))),
+              ],
+            ]),
+            Text(membre.telephone, style: TextStyle(color: kGris, fontSize: 12)),
+            Text(aPaye ? '✅ Cotisation payée' : '⏳ En attente', style: TextStyle(fontSize: 11, color: aPaye ? Colors.green : Colors.orange)),
+          ])),
+          GestureDetector(
+            onTap: () => _togglePaiement(membre, aPaye),
+            child: Container(
+              width: 36, height: 36,
+              decoration: BoxDecoration(
+                color: aPaye ? Colors.green : Colors.grey.shade100,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: aPaye ? Colors.green : Colors.grey.shade300),
+              ),
+              child: Icon(aPaye ? Icons.check_rounded : Icons.circle_outlined, color: aPaye ? Colors.white : kGris, size: 20),
+            ),
           ),
         ]),
-        SizedBox(width: 12),
-        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Row(children: [
-            Text(membre.nom, style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14, color: kNoir)),
-            if (estReceveur) ...[
-              SizedBox(width: 6),
-              Container(padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2), decoration: BoxDecoration(color: Colors.amber, borderRadius: BorderRadius.circular(6)),
-                child: Text('Reçoit', style: TextStyle(fontSize: 10, color: Colors.white, fontWeight: FontWeight.w600))),
-            ],
-            if (aDejaRecu) ...[
-              SizedBox(width: 6),
-              Container(padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2), decoration: BoxDecoration(color: Colors.green.shade50, borderRadius: BorderRadius.circular(6)),
-                child: Text('A reçu ✓', style: TextStyle(fontSize: 10, color: Colors.green.shade700))),
-            ],
-          ]),
-          Text(membre.telephone, style: TextStyle(color: kGris, fontSize: 12)),
-          Text(aPaye ? '✅ Cotisation payée' : '⏳ En attente de paiement', style: TextStyle(fontSize: 11, color: aPaye ? Colors.green : Colors.orange)),
-        ])),
-        GestureDetector(
-          onTap: () => _togglePaiement(membre, aPaye),
-          child: Container(
-            width: 36, height: 36,
-            decoration: BoxDecoration(
-              color: aPaye ? Colors.green : Colors.grey.shade100,
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: aPaye ? Colors.green : Colors.grey.shade300),
-            ),
-            child: Icon(aPaye ? Icons.check_rounded : Icons.circle_outlined, color: aPaye ? Colors.white : kGris, size: 20),
-          ),
-        ),
-      ]),
+      ),
     );
   }
 
@@ -897,7 +908,8 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
               final contact = contacts[index];
               final tel = contact.phones.isNotEmpty ? contact.phones.first.number : '';
               return ListTile(
-                leading: CircleAvatar(backgroundColor: kBluLight, child: Text(contact.displayName.isNotEmpty ? contact.displayName[0].toUpperCase() : '?', style: TextStyle(color: kBlue))),
+                leading: CircleAvatar(backgroundColor: kBluLight,
+                  child: Text(contact.displayName.isNotEmpty ? contact.displayName[0].toUpperCase() : '?', style: TextStyle(color: kBlue))),
                 title: Text(contact.displayName),
                 subtitle: Text(tel),
                 onTap: () { Navigator.pop(context); _sauvegarderMembre(contact.displayName, tel); },
