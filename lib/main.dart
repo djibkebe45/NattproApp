@@ -8,6 +8,7 @@ import 'supabase_config.dart';
 import 'auth_screen.dart';
 import 'amendes_screen.dart';
 import 'coffre_fort_screen.dart';
+import 'impayes_screen.dart';
 import 'dart:math';
 
 final FlutterLocalNotificationsPlugin notificationsPlugin =
@@ -74,11 +75,12 @@ class Membre {
   String nom;
   String telephone;
   int ordre;
+  bool aDejaGagne;
   List<Paiement> paiements;
-  Membre({this.id, required this.nom, required this.telephone, required this.ordre, required this.paiements});
+  Membre({this.id, required this.nom, required this.telephone, required this.ordre, this.aDejaGagne = false, required this.paiements});
   factory Membre.fromJson(Map<String, dynamic> json) => Membre(
     id: json['id'], nom: json['nom'], telephone: json['telephone'] ?? '',
-    ordre: json['ordre'] ?? 0, paiements: [],
+    ordre: json['ordre'] ?? 0, aDejaGagne: json['a_deja_gagne'] ?? false, paiements: [],
   );
   bool aPaye(int tour) => paiements.any((p) => p.tour == tour && p.paye);
 }
@@ -108,9 +110,11 @@ class GroupeNatt {
     return tours.clamp(0, membres.isEmpty ? 0 : membres.length - 1);
   }
   Membre? get receveurActuel => membres.isNotEmpty && tirageEffectue ? membres[tourActuel % membres.length] : null;
-  bool get estTermine => tirageEffectue && membres.isNotEmpty && tourActuel >= membres.length - 1;
+  bool get estTermine => tirageEffectue && membres.isNotEmpty && membres.every((m) => m.aDejaGagne);
   double get cagnotte => membres.length * montant;
   int get nbPayesTourActuel => membres.where((m) => m.aPaye(tourActuel)).length;
+  List<Membre> get membresNonPayes => membres.where((m) => !m.aPaye(tourActuel)).toList();
+  List<Membre> get membresEligibles => membres.where((m) => !m.aDejaGagne).toList();
 }
 
 class HomeScreen extends StatefulWidget {
@@ -273,6 +277,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _buildGroupeCard(GroupeNatt groupe, int index) {
     final receveur = groupe.receveurActuel;
     final progression = groupe.membres.isEmpty ? 0.0 : groupe.nbPayesTourActuel / groupe.membres.length;
+    final nbImpayes = groupe.membresNonPayes.length;
     return Dismissible(
       key: Key(groupe.id ?? index.toString()),
       direction: DismissDirection.endToStart,
@@ -319,6 +324,12 @@ class _HomeScreenState extends State<HomeScreen> {
               Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
                 Text('${groupe.montant.toStringAsFixed(0)}', style: TextStyle(color: kBlue, fontWeight: FontWeight.w600, fontSize: 15)),
                 Text('FCFA', style: TextStyle(color: kGris, fontSize: 11)),
+                if (nbImpayes > 0) Container(
+                  margin: EdgeInsets.only(top: 2),
+                  padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(color: Colors.red.shade50, borderRadius: BorderRadius.circular(6)),
+                  child: Text('$nbImpayes impayé${nbImpayes > 1 ? 's' : ''}', style: TextStyle(color: Colors.red, fontSize: 10, fontWeight: FontWeight.w600)),
+                ),
               ]),
             ]),
             SizedBox(height: 10),
@@ -567,6 +578,7 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
         actions: [
           IconButton(icon: Icon(Icons.savings_rounded, color: Colors.white), tooltip: 'Coffre-fort', onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => CoffreFortScreen(groupe: groupe)))),
           IconButton(icon: Icon(Icons.warning_amber_rounded, color: Colors.white), tooltip: 'Amendes', onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => AmendesScreen(groupe: groupe)))),
+          IconButton(icon: Icon(Icons.money_off_rounded, color: Colors.white), tooltip: 'Impayés', onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => ImpayesScreen(groupe: groupe)))),
           IconButton(icon: Icon(Icons.share, color: Colors.white), onPressed: _partagerWhatsApp),
           if (groupe.membres.length >= 2)
             IconButton(icon: Icon(Icons.shuffle, color: Colors.white), onPressed: _tirage),
@@ -608,6 +620,7 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
     final groupe = widget.groupe;
     final nbPaies = groupe.nbPayesTourActuel;
     final progression = groupe.membres.isEmpty ? 0.0 : nbPaies / groupe.membres.length;
+    final eligibles = groupe.membresEligibles.length;
     return Container(
       margin: EdgeInsets.all(16), padding: EdgeInsets.all(16),
       decoration: BoxDecoration(color: kBlue, borderRadius: BorderRadius.circular(16)),
@@ -616,7 +629,7 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
           _stat('👥', '${groupe.membres.length}', 'Membres'),
           _stat('💰', '${groupe.montant.toStringAsFixed(0)}', 'FCFA'),
           _stat('🏆', '${groupe.cagnotte.toStringAsFixed(0)}', 'Cagnotte'),
-          _stat('📅', '${groupe.tourActuel + 1}/${groupe.membres.length}', 'Tour'),
+          _stat('🎲', '$eligibles', 'Éligibles'),
         ]),
         if (groupe.receveurActuel != null) ...[
           SizedBox(height: 12),
@@ -670,7 +683,7 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
     final tour = groupe.tourActuel;
     final estReceveur = groupe.tirageEffectue && membre.ordre - 1 == tour;
     final aPaye = membre.aPaye(tour);
-    final aDejaRecu = groupe.tirageEffectue && membre.ordre - 1 < tour;
+    final aDejaRecu = membre.aDejaGagne;
     return Dismissible(
       key: Key(membre.id ?? index.toString()),
       direction: DismissDirection.endToStart,
@@ -710,8 +723,8 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
           Stack(children: [
             CircleAvatar(
               radius: 22,
-              backgroundColor: estReceveur ? Colors.amber : kBluLight,
-              child: Text('${membre.ordre}', style: TextStyle(color: estReceveur ? Colors.white : kBlue, fontWeight: FontWeight.w600, fontSize: 15)),
+              backgroundColor: estReceveur ? Colors.amber : aDejaRecu ? Colors.green.shade100 : kBluLight,
+              child: Text('${membre.ordre}', style: TextStyle(color: estReceveur ? Colors.white : aDejaRecu ? Colors.green.shade700 : kBlue, fontWeight: FontWeight.w600, fontSize: 15)),
             ),
             if (aDejaRecu) Positioned(right: 0, bottom: 0,
               child: Container(width: 14, height: 14, decoration: BoxDecoration(color: Colors.green, shape: BoxShape.circle),
@@ -726,7 +739,7 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
                 Container(padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2), decoration: BoxDecoration(color: Colors.amber, borderRadius: BorderRadius.circular(6)),
                   child: Text('Reçoit', style: TextStyle(fontSize: 10, color: Colors.white, fontWeight: FontWeight.w600))),
               ],
-              if (aDejaRecu) ...[
+              if (aDejaRecu && !estReceveur) ...[
                 SizedBox(width: 6),
                 Container(padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2), decoration: BoxDecoration(color: Colors.green.shade50, borderRadius: BorderRadius.circular(6)),
                   child: Text('A reçu ✓', style: TextStyle(fontSize: 10, color: Colors.green.shade700))),
@@ -787,16 +800,29 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
     message += '👥 ${groupe.membres.length} membres\n\n';
     message += '🎯 *Ordre du tirage :*\n';
     for (final m in groupe.membres) {
-      final aRecu = m.ordre - 1 < groupe.tourActuel;
       final recoit = m.ordre - 1 == groupe.tourActuel;
-      message += '${m.ordre}. ${m.nom}${recoit ? ' 🎯' : aRecu ? ' ✅' : ''}\n';
+      message += '${m.ordre}. ${m.nom}${recoit ? ' 🎯' : m.aDejaGagne ? ' ✅' : ''}\n';
     }
     message += '\n_Partagé via NattPro_ 🇸🇳';
-    final url = Uri.parse('whatsapp://send?text=${Uri.encodeComponent(message)}');
-    if (await canLaunchUrl(url)) {
-      await launchUrl(url);
-    } else {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('WhatsApp non installé !')));
+
+    // Essayer WhatsApp direct puis wa.me
+    final urlDirect = Uri.parse('whatsapp://send?text=${Uri.encodeComponent(message)}');
+    final urlWeb = Uri.parse('https://wa.me/?text=${Uri.encodeComponent(message)}');
+
+    try {
+      if (await canLaunchUrl(urlDirect)) {
+        await launchUrl(urlDirect);
+      } else if (await canLaunchUrl(urlWeb)) {
+        await launchUrl(urlWeb, mode: LaunchMode.externalApplication);
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Impossible d\'ouvrir WhatsApp')));
+      }
+    } catch (e) {
+      try {
+        await launchUrl(urlWeb, mode: LaunchMode.externalApplication);
+      } catch (_) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Installez WhatsApp pour partager')));
+      }
     }
   }
 
@@ -805,22 +831,43 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Ce Natt est déjà terminé !')));
       return;
     }
+    final eligibles = widget.groupe.membresEligibles;
+    if (eligibles.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Tous les membres ont déjà gagné !')));
+      return;
+    }
     showDialog(
       context: context,
       builder: (_) => AlertDialog(
         title: Text('🎲 Tirage au sort'),
-        content: Text('Mélanger aléatoirement les ${widget.groupe.membres.length} membres ?'),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          Text('${eligibles.length} membres éligibles au tirage :'),
+          SizedBox(height: 8),
+          ...eligibles.map((m) => Padding(
+            padding: EdgeInsets.symmetric(vertical: 2),
+            child: Row(children: [
+              Icon(Icons.person, color: kBlue, size: 16),
+              SizedBox(width: 6),
+              Text(m.nom, style: TextStyle(fontSize: 13)),
+            ]),
+          )).toList(),
+        ]),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context), child: Text('Annuler')),
           ElevatedButton(
             style: ElevatedButton.styleFrom(backgroundColor: kBlue),
             onPressed: () async {
               Navigator.pop(context);
-              widget.groupe.membres.shuffle(Random());
-              for (int i = 0; i < widget.groupe.membres.length; i++) {
-                widget.groupe.membres[i].ordre = i + 1;
-                await supabase.from('membres').update({'ordre': i + 1}).eq('id', widget.groupe.membres[i].id!);
+              // Mélanger seulement les éligibles, les gagnants restent en place
+              final gagnants = widget.groupe.membres.where((m) => m.aDejaGagne).toList();
+              eligibles.shuffle(Random());
+              final nouvelOrdre = [...gagnants, ...eligibles];
+              for (int i = 0; i < nouvelOrdre.length; i++) {
+                nouvelOrdre[i].ordre = i + 1;
+                await supabase.from('membres').update({'ordre': i + 1}).eq('id', nouvelOrdre[i].id!);
               }
+              widget.groupe.membres.clear();
+              widget.groupe.membres.addAll(nouvelOrdre);
               await supabase.from('groupes').update({'tirage_effectue': true}).eq('id', widget.groupe.id!);
               setState(() => widget.groupe.tirageEffectue = true);
               widget.onUpdate();
@@ -834,6 +881,15 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
     );
   }
 
+  Future<void> _marquerGagnant(Membre gagnant) async {
+    await supabase.from('membres').update({'a_deja_gagne': true}).eq('id', gagnant.id!);
+    setState(() => gagnant.aDejaGagne = true);
+    widget.onUpdate();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('✅ ${gagnant.nom} marqué comme ayant reçu'), backgroundColor: Colors.green),
+    );
+  }
+
   void _afficherResultat() {
     showDialog(
       context: context,
@@ -841,9 +897,16 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
         title: Text('🎉 Ordre du tirage'),
         content: SingleChildScrollView(
           child: Column(mainAxisSize: MainAxisSize.min, children: widget.groupe.membres.map((m) => ListTile(
-            leading: CircleAvatar(backgroundColor: kBluLight, child: Text('${m.ordre}', style: TextStyle(color: kBlue, fontWeight: FontWeight.w600))),
+            leading: CircleAvatar(
+              backgroundColor: m.aDejaGagne ? Colors.green.shade100 : kBluLight,
+              child: Text('${m.ordre}', style: TextStyle(color: m.aDejaGagne ? Colors.green : kBlue, fontWeight: FontWeight.w600)),
+            ),
             title: Text(m.nom),
-            subtitle: Text(m.telephone),
+            subtitle: Text(m.aDejaGagne ? 'A déjà reçu ✓' : 'En attente'),
+            trailing: m.aDejaGagne ? null : TextButton(
+              onPressed: () { Navigator.pop(context); _marquerGagnant(m); },
+              child: Text('Marquer reçu', style: TextStyle(fontSize: 11)),
+            ),
           )).toList()),
         ),
         actions: [
