@@ -146,3 +146,5 @@ class _AuthScreenState extends State<AuthScreen> {
       setState(() => _chargement = false);
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Erreur: $e')));
     }
+  }
+}
