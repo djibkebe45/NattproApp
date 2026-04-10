@@ -132,7 +132,6 @@ class _AuthScreenState extends State<AuthScreen> {
           password: _passCtrl.text,
         );
       }
-      // Vérifier si PIN existe
       final prefs = await SharedPreferences.getInstance();
       final pinExiste = prefs.getString('app_pin') != null;
       if (pinExiste) {
@@ -147,4 +146,3 @@ class _AuthScreenState extends State<AuthScreen> {
       setState(() => _chargement = false);
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Erreur: $e')));
     }
-  }
