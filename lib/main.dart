@@ -4,11 +4,15 @@ import 'package:flutter_contacts/flutter_contacts.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'supabase_config.dart';
 import 'auth_screen.dart';
+import 'pin_screen.dart';
 import 'amendes_screen.dart';
 import 'coffre_fort_screen.dart';
 import 'impayes_screen.dart';
+import 'invitation_screen.dart';
+import 'offline_manager.dart';
 import 'dart:math';
 
 final FlutterLocalNotificationsPlugin notificationsPlugin =
@@ -56,7 +60,20 @@ class NattProApp extends StatelessWidget {
         colorScheme: ColorScheme.fromSeed(seedColor: kBlue),
         useMaterial3: true,
       ),
-      home: supabase.auth.currentSession != null ? HomeScreen() : AuthScreen(),
+      home: _getHome(),
+    );
+  }
+
+  Widget _getHome() {
+    if (supabase.auth.currentSession == null) return AuthScreen();
+    return FutureBuilder<SharedPreferences>(
+      future: SharedPreferences.getInstance(),
+      builder: (context, snapshot) {
+        if (!snapshot.hasData) return Scaffold(backgroundColor: kBlue, body: Center(child: CircularProgressIndicator(color: Colors.white)));
+        final pin = snapshot.data!.getString('app_pin');
+        if (pin == null) return PinScreen(creation: true);
+        return PinScreen(creation: false);
+      },
     );
   }
 }
@@ -91,12 +108,14 @@ class GroupeNatt {
   double montant;
   String frequence;
   DateTime dateDebut;
+  DateTime? dateFin;
   List<Membre> membres;
   bool tirageEffectue;
-  GroupeNatt({this.id, required this.nom, required this.montant, required this.frequence, required this.dateDebut, required this.membres, this.tirageEffectue = false});
+  GroupeNatt({this.id, required this.nom, required this.montant, required this.frequence, required this.dateDebut, this.dateFin, required this.membres, this.tirageEffectue = false});
   factory GroupeNatt.fromJson(Map<String, dynamic> json) => GroupeNatt(
     id: json['id'], nom: json['nom'], montant: (json['montant'] as num).toDouble(),
     frequence: json['frequence'], dateDebut: DateTime.parse(json['date_debut']),
+    dateFin: json['date_fin'] != null ? DateTime.parse(json['date_fin']) : null,
     tirageEffectue: json['tirage_effectue'] ?? false, membres: [],
   );
   int get tourActuel {
@@ -104,6 +123,8 @@ class GroupeNatt {
     int tours = 0;
     if (frequence == 'Hebdomadaire') {
       tours = maintenant.difference(dateDebut).inDays ~/ 7;
+    } else if (frequence == 'Annuel') {
+      tours = maintenant.year - dateDebut.year;
     } else {
       tours = (maintenant.year - dateDebut.year) * 12 + maintenant.month - dateDebut.month;
     }
@@ -125,12 +146,28 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   List<GroupeNatt> groupes = [];
   bool chargement = true;
+  bool estHorsLigne = false;
   int _onglet = 0;
 
   @override
   void initState() {
     super.initState();
     _chargerGroupes();
+    _synchroniserHorsLigne();
+  }
+
+  Future<void> _synchroniserHorsLigne() async {
+    final paiements = await OfflineManager.getPaiementsEnAttente();
+    if (paiements.isEmpty) return;
+    try {
+      for (final p in paiements) {
+        await supabase.from('paiements').insert(p);
+      }
+      await OfflineManager.viderPaiementsEnAttente();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('✅ ${paiements.length} paiement(s) synchronisé(s)'), backgroundColor: Colors.green),
+      );
+    } catch (_) {}
   }
 
   Future<void> _chargerGroupes() async {
@@ -154,14 +191,35 @@ class _HomeScreenState extends State<HomeScreen> {
         groupe.membres.sort((a, b) => a.ordre.compareTo(b.ordre));
         return groupe;
       }).toList();
-      setState(() { groupes = liste; chargement = false; });
+      await OfflineManager.sauvegarderGroupes(data);
+      setState(() { groupes = liste; chargement = false; estHorsLigne = false; });
     } catch (e) {
-      setState(() => chargement = false);
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Erreur: $e')));
+      // Charger depuis le cache
+      final cache = await OfflineManager.chargerGroupesCache();
+      if (cache != null) {
+        final liste = cache.map((g) {
+          final groupe = GroupeNatt.fromJson(g);
+          groupe.membres = (g['membres'] as List).map((m) {
+            final membre = Membre.fromJson(m);
+            membre.paiements = (m['paiements'] as List).map((p) => Paiement(
+              id: p['id'], membreId: p['membre_id'], tour: p['tour'],
+              paye: p['paye'], date: p['date_paiement'] != null ? DateTime.parse(p['date_paiement']) : null,
+            )).toList();
+            return membre;
+          }).toList();
+          groupe.membres.sort((a, b) => a.ordre.compareTo(b.ordre));
+          return groupe;
+        }).toList();
+        setState(() { groupes = liste; chargement = false; estHorsLigne = true; });
+      } else {
+        setState(() { chargement = false; estHorsLigne = true; });
+      }
     }
   }
 
   Future<void> _deconnecter() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('app_pin');
     await supabase.auth.signOut();
     Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => AuthScreen()));
   }
@@ -212,10 +270,20 @@ class _HomeScreenState extends State<HomeScreen> {
     return CustomScrollView(
       slivers: [
         SliverAppBar(
-          expandedHeight: 170,
+          expandedHeight: 175,
           pinned: true,
           backgroundColor: kBlue,
           actions: [
+            if (estHorsLigne) Container(
+              margin: EdgeInsets.only(right: 4),
+              padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(color: Colors.orange, borderRadius: BorderRadius.circular(8)),
+              child: Row(children: [
+                Icon(Icons.wifi_off, color: Colors.white, size: 14),
+                SizedBox(width: 4),
+                Text('Hors ligne', style: TextStyle(color: Colors.white, fontSize: 11)),
+              ]),
+            ),
             IconButton(icon: Icon(Icons.notifications_outlined, color: Colors.white), onPressed: _testerNotification),
             IconButton(icon: Icon(Icons.refresh, color: Colors.white), onPressed: _chargerGroupes),
             IconButton(icon: Icon(Icons.logout, color: Colors.white), onPressed: _deconnecter),
@@ -320,6 +388,8 @@ class _HomeScreenState extends State<HomeScreen> {
               Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                 Text(groupe.nom, style: TextStyle(fontWeight: FontWeight.w600, fontSize: 15, color: kNoir)),
                 Text('${groupe.membres.length} membres · ${groupe.frequence}', style: TextStyle(color: kGris, fontSize: 12)),
+                if (groupe.dateFin != null)
+                  Text('Fin : ${groupe.dateFin!.day}/${groupe.dateFin!.month}/${groupe.dateFin!.year}', style: TextStyle(color: kGris, fontSize: 11)),
               ])),
               Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
                 Text('${groupe.montant.toStringAsFixed(0)}', style: TextStyle(color: kBlue, fontWeight: FontWeight.w600, fontSize: 15)),
@@ -474,6 +544,7 @@ class _CreerGroupeScreenState extends State<CreerGroupeScreen> {
   final _montantCtrl = TextEditingController();
   String _frequence = 'Mensuel';
   DateTime _dateDebut = DateTime.now();
+  DateTime? _dateFin;
   bool _enregistrement = false;
 
   @override
@@ -499,7 +570,7 @@ class _CreerGroupeScreenState extends State<CreerGroupeScreen> {
               DropdownButtonFormField<String>(
                 value: _frequence,
                 decoration: InputDecoration(labelText: 'Fréquence', prefixIcon: Icon(Icons.repeat, color: kBlue), border: OutlineInputBorder(borderRadius: BorderRadius.circular(10))),
-                items: ['Hebdomadaire', 'Mensuel'].map((f) => DropdownMenuItem(value: f, child: Text(f))).toList(),
+                items: ['Hebdomadaire', 'Mensuel', 'Annuel'].map((f) => DropdownMenuItem(value: f, child: Text(f))).toList(),
                 onChanged: (val) => setState(() => _frequence = val!),
               ),
               SizedBox(height: 14),
@@ -511,6 +582,18 @@ class _CreerGroupeScreenState extends State<CreerGroupeScreen> {
                 onTap: () async {
                   final date = await showDatePicker(context: context, initialDate: _dateDebut, firstDate: DateTime(2024), lastDate: DateTime(2030));
                   if (date != null) setState(() => _dateDebut = date);
+                },
+              ),
+              SizedBox(height: 10),
+              ListTile(
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10), side: BorderSide(color: Colors.grey.shade300)),
+                leading: Icon(Icons.event_busy, color: Colors.red),
+                title: Text('Date de fin (optionnel)'),
+                subtitle: Text(_dateFin != null ? '${_dateFin!.day}/${_dateFin!.month}/${_dateFin!.year}' : 'Non définie'),
+                trailing: _dateFin != null ? IconButton(icon: Icon(Icons.close, size: 18), onPressed: () => setState(() => _dateFin = null)) : null,
+                onTap: () async {
+                  final date = await showDatePicker(context: context, initialDate: _dateFin ?? DateTime.now().add(Duration(days: 30)), firstDate: DateTime.now(), lastDate: DateTime(2035));
+                  if (date != null) setState(() => _dateFin = date);
                 },
               ),
             ]),
@@ -545,6 +628,7 @@ class _CreerGroupeScreenState extends State<CreerGroupeScreen> {
       await supabase.from('groupes').insert({
         'nom': _nomCtrl.text, 'montant': double.tryParse(_montantCtrl.text) ?? 0,
         'frequence': _frequence, 'date_debut': _dateDebut.toIso8601String().split('T')[0],
+        'date_fin': _dateFin?.toIso8601String().split('T')[0],
         'tirage_effectue': false, 'user_id': supabase.auth.currentUser!.id,
       });
       widget.onCreer();
@@ -576,6 +660,7 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
         title: Text(groupe.nom, style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
         iconTheme: IconThemeData(color: Colors.white),
         actions: [
+          IconButton(icon: Icon(Icons.person_add_alt_1, color: Colors.white), tooltip: 'Inviter', onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => InvitationScreen(groupe: groupe)))),
           IconButton(icon: Icon(Icons.savings_rounded, color: Colors.white), tooltip: 'Coffre-fort', onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => CoffreFortScreen(groupe: groupe)))),
           IconButton(icon: Icon(Icons.warning_amber_rounded, color: Colors.white), tooltip: 'Amendes', onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => AmendesScreen(groupe: groupe)))),
           IconButton(icon: Icon(Icons.money_off_rounded, color: Colors.white), tooltip: 'Impayés', onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => ImpayesScreen(groupe: groupe)))),
@@ -658,6 +743,10 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
             minHeight: 7,
           ),
         ),
+        if (groupe.dateFin != null) ...[
+          SizedBox(height: 8),
+          Text('Fin du Natt : ${groupe.dateFin!.day}/${groupe.dateFin!.month}/${groupe.dateFin!.year}', style: TextStyle(color: Colors.white70, fontSize: 11)),
+        ],
         if (groupe.estTermine) ...[
           SizedBox(height: 10),
           Container(
@@ -748,21 +837,45 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
             Text(membre.telephone, style: TextStyle(color: kGris, fontSize: 12)),
             Text(aPaye ? '✅ Cotisation payée' : '⏳ En attente', style: TextStyle(fontSize: 11, color: aPaye ? Colors.green : Colors.orange)),
           ])),
-          GestureDetector(
-            onTap: () => _togglePaiement(membre, aPaye),
-            child: Container(
-              width: 36, height: 36,
-              decoration: BoxDecoration(
-                color: aPaye ? Colors.green : Colors.grey.shade100,
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: aPaye ? Colors.green : Colors.grey.shade300),
+          Column(children: [
+            GestureDetector(
+              onTap: () => _togglePaiement(membre, aPaye),
+              child: Container(
+                width: 36, height: 36,
+                decoration: BoxDecoration(
+                  color: aPaye ? Colors.green : Colors.grey.shade100,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: aPaye ? Colors.green : Colors.grey.shade300),
+                ),
+                child: Icon(aPaye ? Icons.check_rounded : Icons.circle_outlined, color: aPaye ? Colors.white : kGris, size: 20),
               ),
-              child: Icon(aPaye ? Icons.check_rounded : Icons.circle_outlined, color: aPaye ? Colors.white : kGris, size: 20),
             ),
-          ),
+            if (membre.telephone.isNotEmpty) ...[
+              SizedBox(height: 4),
+              GestureDetector(
+                onTap: () => _payerWave(membre),
+                child: Container(
+                  padding: EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                  decoration: BoxDecoration(color: Colors.blue.shade50, borderRadius: BorderRadius.circular(6), border: Border.all(color: Colors.blue.shade200)),
+                  child: Text('Wave', style: TextStyle(color: Colors.blue.shade700, fontSize: 9, fontWeight: FontWeight.w600)),
+                ),
+              ),
+            ],
+          ]),
         ]),
       ),
     );
+  }
+
+  Future<void> _payerWave(Membre membre) async {
+    final tel = membre.telephone.replaceAll(' ', '').replaceAll('+', '').replaceAll('-', '');
+    final montant = widget.groupe.montant.toInt();
+    final url = Uri.parse('https://pay.wave.com/m/$tel?amount=$montant');
+    try {
+      await launchUrl(url, mode: LaunchMode.externalApplication);
+    } catch (_) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Impossible d\'ouvrir Wave')));
+    }
   }
 
   Future<void> _togglePaiement(Membre membre, bool aPaye) async {
@@ -770,11 +883,20 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
     try {
       final existing = await supabase.from('paiements').select().eq('membre_id', membre.id!).eq('tour', tour);
       if ((existing as List).isEmpty) {
-        final result = await supabase.from('paiements').insert({
-          'membre_id': membre.id, 'tour': tour, 'paye': true, 'date_paiement': DateTime.now().toIso8601String(),
-        }).select();
-        setState(() => membre.paiements.add(Paiement(id: result[0]['id'], membreId: membre.id!, tour: tour, paye: true, date: DateTime.now())));
-        await envoyerNotification('✅ Cotisation reçue', '${membre.nom} a payé pour ${widget.groupe.nom}');
+        try {
+          final result = await supabase.from('paiements').insert({
+            'membre_id': membre.id, 'tour': tour, 'paye': true, 'date_paiement': DateTime.now().toIso8601String(),
+          }).select();
+          setState(() => membre.paiements.add(Paiement(id: result[0]['id'], membreId: membre.id!, tour: tour, paye: true, date: DateTime.now())));
+          await envoyerNotification('✅ Cotisation reçue', '${membre.nom} a payé pour ${widget.groupe.nom}');
+        } catch (_) {
+          // Sauvegarder hors ligne
+          await OfflineManager.ajouterPaiementEnAttente({
+            'membre_id': membre.id, 'tour': tour, 'paye': true, 'date_paiement': DateTime.now().toIso8601String(),
+          });
+          setState(() => membre.paiements.add(Paiement(membreId: membre.id!, tour: tour, paye: true)));
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('📶 Paiement sauvegardé hors ligne'), backgroundColor: Colors.orange));
+        }
       } else {
         await supabase.from('paiements').update({'paye': !aPaye}).eq('membre_id', membre.id!).eq('tour', tour);
         setState(() {
@@ -804,24 +926,14 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
       message += '${m.ordre}. ${m.nom}${recoit ? ' 🎯' : m.aDejaGagne ? ' ✅' : ''}\n';
     }
     message += '\n_Partagé via NattPro_ 🇸🇳';
-
-    // Essayer WhatsApp direct puis wa.me
     final urlDirect = Uri.parse('whatsapp://send?text=${Uri.encodeComponent(message)}');
     final urlWeb = Uri.parse('https://wa.me/?text=${Uri.encodeComponent(message)}');
-
     try {
-      if (await canLaunchUrl(urlDirect)) {
-        await launchUrl(urlDirect);
-      } else if (await canLaunchUrl(urlWeb)) {
-        await launchUrl(urlWeb, mode: LaunchMode.externalApplication);
-      } else {
+      if (await canLaunchUrl(urlDirect)) { await launchUrl(urlDirect); return; }
+      await launchUrl(urlWeb, mode: LaunchMode.externalApplication);
+    } catch (_) {
+      try { await launchUrl(urlWeb, mode: LaunchMode.externalApplication); } catch (e) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Impossible d\'ouvrir WhatsApp')));
-      }
-    } catch (e) {
-      try {
-        await launchUrl(urlWeb, mode: LaunchMode.externalApplication);
-      } catch (_) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Installez WhatsApp pour partager')));
       }
     }
   }
@@ -841,7 +953,7 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
       builder: (_) => AlertDialog(
         title: Text('🎲 Tirage au sort'),
         content: Column(mainAxisSize: MainAxisSize.min, children: [
-          Text('${eligibles.length} membres éligibles au tirage :'),
+          Text('${eligibles.length} membres éligibles :'),
           SizedBox(height: 8),
           ...eligibles.map((m) => Padding(
             padding: EdgeInsets.symmetric(vertical: 2),
@@ -858,7 +970,6 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
             style: ElevatedButton.styleFrom(backgroundColor: kBlue),
             onPressed: () async {
               Navigator.pop(context);
-              // Mélanger seulement les éligibles, les gagnants restent en place
               final gagnants = widget.groupe.membres.where((m) => m.aDejaGagne).toList();
               eligibles.shuffle(Random());
               final nouvelOrdre = [...gagnants, ...eligibles];
@@ -866,9 +977,9 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
                 nouvelOrdre[i].ordre = i + 1;
                 await supabase.from('membres').update({'ordre': i + 1}).eq('id', nouvelOrdre[i].id!);
               }
+              await supabase.from('groupes').update({'tirage_effectue': true}).eq('id', widget.groupe.id!);
               widget.groupe.membres.clear();
               widget.groupe.membres.addAll(nouvelOrdre);
-              await supabase.from('groupes').update({'tirage_effectue': true}).eq('id', widget.groupe.id!);
               setState(() => widget.groupe.tirageEffectue = true);
               widget.onUpdate();
               _afficherResultat();
@@ -878,15 +989,6 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
           ),
         ],
       ),
-    );
-  }
-
-  Future<void> _marquerGagnant(Membre gagnant) async {
-    await supabase.from('membres').update({'a_deja_gagne': true}).eq('id', gagnant.id!);
-    setState(() => gagnant.aDejaGagne = true);
-    widget.onUpdate();
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('✅ ${gagnant.nom} marqué comme ayant reçu'), backgroundColor: Colors.green),
     );
   }
 
@@ -903,16 +1005,25 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
             ),
             title: Text(m.nom),
             subtitle: Text(m.aDejaGagne ? 'A déjà reçu ✓' : 'En attente'),
-            trailing: m.aDejaGagne ? null : TextButton(
+            trailing: !m.aDejaGagne ? TextButton(
               onPressed: () { Navigator.pop(context); _marquerGagnant(m); },
-              child: Text('Marquer reçu', style: TextStyle(fontSize: 11)),
-            ),
+              child: Text('Marquer reçu', style: TextStyle(fontSize: 11, color: kBlue)),
+            ) : null,
           )).toList()),
         ),
         actions: [
           ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: kBlue), onPressed: () => Navigator.pop(context), child: Text('OK', style: TextStyle(color: Colors.white))),
         ],
       ),
+    );
+  }
+
+  Future<void> _marquerGagnant(Membre gagnant) async {
+    await supabase.from('membres').update({'a_deja_gagne': true}).eq('id', gagnant.id!);
+    setState(() => gagnant.aDejaGagne = true);
+    widget.onUpdate();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('✅ ${gagnant.nom} marqué comme ayant reçu'), backgroundColor: Colors.green),
     );
   }
 

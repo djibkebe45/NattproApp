@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'main.dart';
+import 'pin_screen.dart';
 
 class AuthScreen extends StatefulWidget {
   @override
@@ -40,10 +42,7 @@ class _AuthScreenState extends State<AuthScreen> {
                   onTap: () => setState(() => _connexion = true),
                   child: Container(
                     padding: EdgeInsets.symmetric(vertical: 14),
-                    decoration: BoxDecoration(
-                      color: _connexion ? kBlue : Colors.white,
-                      borderRadius: BorderRadius.circular(16),
-                    ),
+                    decoration: BoxDecoration(color: _connexion ? kBlue : Colors.white, borderRadius: BorderRadius.circular(16)),
                     child: Text('Connexion', textAlign: TextAlign.center,
                       style: TextStyle(color: _connexion ? Colors.white : kGris, fontWeight: FontWeight.w600)),
                   ),
@@ -52,10 +51,7 @@ class _AuthScreenState extends State<AuthScreen> {
                   onTap: () => setState(() => _connexion = false),
                   child: Container(
                     padding: EdgeInsets.symmetric(vertical: 14),
-                    decoration: BoxDecoration(
-                      color: !_connexion ? kBlue : Colors.white,
-                      borderRadius: BorderRadius.circular(16),
-                    ),
+                    decoration: BoxDecoration(color: !_connexion ? kBlue : Colors.white, borderRadius: BorderRadius.circular(16)),
                     child: Text('Inscription', textAlign: TextAlign.center,
                       style: TextStyle(color: !_connexion ? Colors.white : kGris, fontWeight: FontWeight.w600)),
                   ),
@@ -136,7 +132,14 @@ class _AuthScreenState extends State<AuthScreen> {
           password: _passCtrl.text,
         );
       }
-      Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => HomeScreen()));
+      // Vérifier si PIN existe
+      final prefs = await SharedPreferences.getInstance();
+      final pinExiste = prefs.getString('app_pin') != null;
+      if (pinExiste) {
+        Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => HomeScreen()));
+      } else {
+        Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => PinScreen(creation: true)));
+      }
     } on AuthException catch (e) {
       setState(() => _chargement = false);
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
@@ -145,4 +148,3 @@ class _AuthScreenState extends State<AuthScreen> {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Erreur: $e')));
     }
   }
-}
