@@ -13,6 +13,8 @@ import 'coffre_fort_screen.dart';
 import 'impayes_screen.dart';
 import 'invitation_screen.dart';
 import 'offline_manager.dart';
+import 'premium_screen.dart';
+import 'admin_screen.dart';
 import 'dart:math';
 
 final FlutterLocalNotificationsPlugin notificationsPlugin =
@@ -49,6 +51,7 @@ const kBlue = Color(0xFF1B4FD8);
 const kBluLight = Color(0xFFEEF2FF);
 const kNoir = Color(0xFF111111);
 const kGris = Color(0xFF888888);
+const ADMIN_EMAIL = 'djibyk996@gmail.com';
 
 class NattProApp extends StatelessWidget {
   @override
@@ -69,7 +72,10 @@ class NattProApp extends StatelessWidget {
     return FutureBuilder<SharedPreferences>(
       future: SharedPreferences.getInstance(),
       builder: (context, snapshot) {
-        if (!snapshot.hasData) return Scaffold(backgroundColor: kBlue, body: Center(child: CircularProgressIndicator(color: Colors.white)));
+        if (!snapshot.hasData) return Scaffold(
+          backgroundColor: kBlue,
+          body: Center(child: CircularProgressIndicator(color: Colors.white)),
+        );
         final pin = snapshot.data!.getString('app_pin');
         if (pin == null) return PinScreen(creation: true);
         return PinScreen(creation: false);
@@ -147,13 +153,27 @@ class _HomeScreenState extends State<HomeScreen> {
   List<GroupeNatt> groupes = [];
   bool chargement = true;
   bool estHorsLigne = false;
+  bool estPremium = false;
   int _onglet = 0;
 
   @override
   void initState() {
     super.initState();
     _chargerGroupes();
+    _verifierPremium();
     _synchroniserHorsLigne();
+  }
+
+  Future<void> _verifierPremium() async {
+    try {
+      final data = await supabase
+          .from('abonnements')
+          .select()
+          .eq('user_id', supabase.auth.currentUser!.id)
+          .eq('actif', true)
+          .maybeSingle();
+      setState(() => estPremium = data != null && data['type'] == 'premium');
+    } catch (_) {}
   }
 
   Future<void> _synchroniserHorsLigne() async {
@@ -164,7 +184,7 @@ class _HomeScreenState extends State<HomeScreen> {
         await supabase.from('paiements').insert(p);
       }
       await OfflineManager.viderPaiementsEnAttente();
-      ScaffoldMessenger.of(context).showSnackBar(
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('✅ ${paiements.length} paiement(s) synchronisé(s)'), backgroundColor: Colors.green),
       );
     } catch (_) {}
@@ -194,7 +214,6 @@ class _HomeScreenState extends State<HomeScreen> {
       await OfflineManager.sauvegarderGroupes(data);
       setState(() { groupes = liste; chargement = false; estHorsLigne = false; });
     } catch (e) {
-      // Charger depuis le cache
       final cache = await OfflineManager.chargerGroupesCache();
       if (cache != null) {
         final liste = cache.map((g) {
@@ -224,11 +243,13 @@ class _HomeScreenState extends State<HomeScreen> {
     Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => AuthScreen()));
   }
 
+  bool get _estAdmin => supabase.auth.currentUser?.email == ADMIN_EMAIL;
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.grey[100],
-      body: _onglet == 0 ? _buildAccueil() : _buildPaiements(),
+      body: _buildBody(),
       bottomNavigationBar: _buildNavBar(),
       floatingActionButton: _onglet == 0 ? FloatingActionButton(
         backgroundColor: kBlue,
@@ -238,12 +259,22 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  Widget _buildBody() {
+    if (_onglet == 0) return _buildAccueil();
+    if (_onglet == 1) return _buildPaiements();
+    if (_onglet == 2) return PremiumScreen();
+    if (_onglet == 3 && _estAdmin) return AdminScreen();
+    return _buildAccueil();
+  }
+
   Widget _buildNavBar() {
     return Container(
       decoration: BoxDecoration(color: Colors.white, border: Border(top: BorderSide(color: Colors.grey.shade200))),
       child: Row(mainAxisAlignment: MainAxisAlignment.spaceAround, children: [
         _navItem(0, Icons.home_rounded, 'Accueil'),
         _navItem(1, Icons.receipt_long_rounded, 'Paiements'),
+        _navItem(2, Icons.workspace_premium_rounded, 'Premium'),
+        if (_estAdmin) _navItem(3, Icons.admin_panel_settings, 'Admin'),
       ]),
     );
   }
@@ -253,11 +284,11 @@ class _HomeScreenState extends State<HomeScreen> {
     return GestureDetector(
       onTap: () => setState(() => _onglet = index),
       child: Container(
-        padding: EdgeInsets.symmetric(vertical: 12, horizontal: 24),
+        padding: EdgeInsets.symmetric(vertical: 10, horizontal: 16),
         child: Column(mainAxisSize: MainAxisSize.min, children: [
-          Icon(icon, color: actif ? kBlue : kGris, size: 24),
-          SizedBox(height: 4),
-          Text(label, style: TextStyle(fontSize: 11, color: actif ? kBlue : kGris, fontWeight: actif ? FontWeight.w600 : FontWeight.normal)),
+          Icon(icon, color: actif ? kBlue : kGris, size: 22),
+          SizedBox(height: 3),
+          Text(label, style: TextStyle(fontSize: 10, color: actif ? kBlue : kGris, fontWeight: actif ? FontWeight.w600 : FontWeight.normal)),
           if (actif) Container(margin: EdgeInsets.only(top: 3), width: 4, height: 4, decoration: BoxDecoration(color: kBlue, shape: BoxShape.circle)),
         ]),
       ),
@@ -275,14 +306,22 @@ class _HomeScreenState extends State<HomeScreen> {
           backgroundColor: kBlue,
           actions: [
             if (estHorsLigne) Container(
-              margin: EdgeInsets.only(right: 4),
+              margin: EdgeInsets.only(right: 4, top: 8, bottom: 8),
               padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
               decoration: BoxDecoration(color: Colors.orange, borderRadius: BorderRadius.circular(8)),
               child: Row(children: [
                 Icon(Icons.wifi_off, color: Colors.white, size: 14),
                 SizedBox(width: 4),
-                Text('Hors ligne', style: TextStyle(color: Colors.white, fontSize: 11)),
+                Text('Hors ligne', style: TextStyle(color: Colors.white, fontSize: 10)),
               ]),
+            ),
+            if (estPremium) Padding(
+              padding: EdgeInsets.symmetric(vertical: 8),
+              child: Container(
+                padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(color: Colors.amber, borderRadius: BorderRadius.circular(8)),
+                child: Text('👑 Premium', style: TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w600)),
+              ),
             ),
             IconButton(icon: Icon(Icons.notifications_outlined, color: Colors.white), onPressed: _testerNotification),
             IconButton(icon: Icon(Icons.refresh, color: Colors.white), onPressed: _chargerGroupes),
@@ -323,12 +362,43 @@ class _HomeScreenState extends State<HomeScreen> {
                     padding: EdgeInsets.all(16),
                     sliver: SliverList(
                       delegate: SliverChildBuilderDelegate(
-                        (context, index) => _buildGroupeCard(groupes[index], index),
-                        childCount: groupes.length,
+                        (context, index) {
+                          if (index == 0 && !estPremium) return _buildBanniereGratuit();
+                          final i = estPremium ? index : index - 1;
+                          if (i >= groupes.length) return null;
+                          return _buildGroupeCard(groupes[i], i);
+                        },
+                        childCount: groupes.length + (estPremium ? 0 : 1),
                       ),
                     ),
                   ),
       ],
+    );
+  }
+
+  Widget _buildBanniereGratuit() {
+    final nbGroupes = groupes.length;
+    return GestureDetector(
+      onTap: () => setState(() => _onglet = 2),
+      child: Container(
+        margin: EdgeInsets.only(bottom: 12),
+        padding: EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: Colors.amber.shade50,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: Colors.amber.shade300),
+        ),
+        child: Row(children: [
+          Text('👑', style: TextStyle(fontSize: 28)),
+          SizedBox(width: 12),
+          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text('Passez Premium !', style: TextStyle(fontWeight: FontWeight.w700, color: Colors.amber.shade800)),
+            Text('$nbGroupes/2 groupes utilisés — Débloquez tout pour 1 000 FCFA/mois',
+              style: TextStyle(color: Colors.amber.shade700, fontSize: 12)),
+          ])),
+          Icon(Icons.arrow_forward_ios, size: 14, color: Colors.amber.shade700),
+        ]),
+      ),
     );
   }
 
@@ -389,7 +459,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 Text(groupe.nom, style: TextStyle(fontWeight: FontWeight.w600, fontSize: 15, color: kNoir)),
                 Text('${groupe.membres.length} membres · ${groupe.frequence}', style: TextStyle(color: kGris, fontSize: 12)),
                 if (groupe.dateFin != null)
-                  Text('Fin : ${groupe.dateFin!.day}/${groupe.dateFin!.month}/${groupe.dateFin!.year}', style: TextStyle(color: kGris, fontSize: 11)),
+                  Text('Fin: ${groupe.dateFin!.day}/${groupe.dateFin!.month}/${groupe.dateFin!.year}', style: TextStyle(color: kGris, fontSize: 11)),
               ])),
               Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
                 Text('${groupe.montant.toStringAsFixed(0)}', style: TextStyle(color: kBlue, fontWeight: FontWeight.w600, fontSize: 15)),
@@ -528,6 +598,24 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _ajouterGroupe() {
+    if (!estPremium && groupes.length >= 2) {
+      showDialog(
+        context: context,
+        builder: (_) => AlertDialog(
+          title: Text('👑 Limite atteinte'),
+          content: Text('La version gratuite est limitée à 2 groupes.\n\nPassez Premium pour créer des groupes illimités !'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context), child: Text('Plus tard')),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.amber),
+              onPressed: () { Navigator.pop(context); setState(() => _onglet = 2); },
+              child: Text('Passer Premium 👑', style: TextStyle(color: Colors.white)),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
     Navigator.push(context, MaterialPageRoute(builder: (_) => CreerGroupeScreen(onCreer: _chargerGroupes)));
   }
 }
@@ -745,14 +833,16 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
         ),
         if (groupe.dateFin != null) ...[
           SizedBox(height: 8),
-          Text('Fin du Natt : ${groupe.dateFin!.day}/${groupe.dateFin!.month}/${groupe.dateFin!.year}', style: TextStyle(color: Colors.white70, fontSize: 11)),
+          Text('Fin du Natt : ${groupe.dateFin!.day}/${groupe.dateFin!.month}/${groupe.dateFin!.year}',
+            style: TextStyle(color: Colors.white70, fontSize: 11)),
         ],
         if (groupe.estTermine) ...[
           SizedBox(height: 10),
           Container(
             padding: EdgeInsets.all(8),
             decoration: BoxDecoration(color: Colors.greenAccent.withOpacity(0.2), borderRadius: BorderRadius.circular(8)),
-            child: Text('🎉 Ce Natt est terminé ! Tout le monde a reçu.', style: TextStyle(color: Colors.white, fontSize: 12), textAlign: TextAlign.center),
+            child: Text('🎉 Ce Natt est terminé ! Tout le monde a reçu.',
+              style: TextStyle(color: Colors.white, fontSize: 12), textAlign: TextAlign.center),
           ),
         ],
       ]),
@@ -813,7 +903,9 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
             CircleAvatar(
               radius: 22,
               backgroundColor: estReceveur ? Colors.amber : aDejaRecu ? Colors.green.shade100 : kBluLight,
-              child: Text('${membre.ordre}', style: TextStyle(color: estReceveur ? Colors.white : aDejaRecu ? Colors.green.shade700 : kBlue, fontWeight: FontWeight.w600, fontSize: 15)),
+              child: Text('${membre.ordre}', style: TextStyle(
+                color: estReceveur ? Colors.white : aDejaRecu ? Colors.green.shade700 : kBlue,
+                fontWeight: FontWeight.w600, fontSize: 15)),
             ),
             if (aDejaRecu) Positioned(right: 0, bottom: 0,
               child: Container(width: 14, height: 14, decoration: BoxDecoration(color: Colors.green, shape: BoxShape.circle),
@@ -825,17 +917,20 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
               Text(membre.nom, style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14, color: kNoir)),
               if (estReceveur) ...[
                 SizedBox(width: 6),
-                Container(padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2), decoration: BoxDecoration(color: Colors.amber, borderRadius: BorderRadius.circular(6)),
+                Container(padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(color: Colors.amber, borderRadius: BorderRadius.circular(6)),
                   child: Text('Reçoit', style: TextStyle(fontSize: 10, color: Colors.white, fontWeight: FontWeight.w600))),
               ],
               if (aDejaRecu && !estReceveur) ...[
                 SizedBox(width: 6),
-                Container(padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2), decoration: BoxDecoration(color: Colors.green.shade50, borderRadius: BorderRadius.circular(6)),
+                Container(padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(color: Colors.green.shade50, borderRadius: BorderRadius.circular(6)),
                   child: Text('A reçu ✓', style: TextStyle(fontSize: 10, color: Colors.green.shade700))),
               ],
             ]),
             Text(membre.telephone, style: TextStyle(color: kGris, fontSize: 12)),
-            Text(aPaye ? '✅ Cotisation payée' : '⏳ En attente', style: TextStyle(fontSize: 11, color: aPaye ? Colors.green : Colors.orange)),
+            Text(aPaye ? '✅ Cotisation payée' : '⏳ En attente',
+              style: TextStyle(fontSize: 11, color: aPaye ? Colors.green : Colors.orange)),
           ])),
           Column(children: [
             GestureDetector(
@@ -847,7 +942,8 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
                   borderRadius: BorderRadius.circular(10),
                   border: Border.all(color: aPaye ? Colors.green : Colors.grey.shade300),
                 ),
-                child: Icon(aPaye ? Icons.check_rounded : Icons.circle_outlined, color: aPaye ? Colors.white : kGris, size: 20),
+                child: Icon(aPaye ? Icons.check_rounded : Icons.circle_outlined,
+                  color: aPaye ? Colors.white : kGris, size: 20),
               ),
             ),
             if (membre.telephone.isNotEmpty) ...[
@@ -885,17 +981,20 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
       if ((existing as List).isEmpty) {
         try {
           final result = await supabase.from('paiements').insert({
-            'membre_id': membre.id, 'tour': tour, 'paye': true, 'date_paiement': DateTime.now().toIso8601String(),
+            'membre_id': membre.id, 'tour': tour, 'paye': true,
+            'date_paiement': DateTime.now().toIso8601String(),
           }).select();
-          setState(() => membre.paiements.add(Paiement(id: result[0]['id'], membreId: membre.id!, tour: tour, paye: true, date: DateTime.now())));
+          setState(() => membre.paiements.add(Paiement(
+            id: result[0]['id'], membreId: membre.id!, tour: tour, paye: true, date: DateTime.now())));
           await envoyerNotification('✅ Cotisation reçue', '${membre.nom} a payé pour ${widget.groupe.nom}');
         } catch (_) {
-          // Sauvegarder hors ligne
           await OfflineManager.ajouterPaiementEnAttente({
-            'membre_id': membre.id, 'tour': tour, 'paye': true, 'date_paiement': DateTime.now().toIso8601String(),
+            'membre_id': membre.id, 'tour': tour, 'paye': true,
+            'date_paiement': DateTime.now().toIso8601String(),
           });
           setState(() => membre.paiements.add(Paiement(membreId: membre.id!, tour: tour, paye: true)));
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('📶 Paiement sauvegardé hors ligne'), backgroundColor: Colors.orange));
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('📶 Paiement sauvegardé hors ligne'), backgroundColor: Colors.orange));
         }
       } else {
         await supabase.from('paiements').update({'paye': !aPaye}).eq('membre_id', membre.id!).eq('tour', tour);
@@ -1012,7 +1111,9 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
           )).toList()),
         ),
         actions: [
-          ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: kBlue), onPressed: () => Navigator.pop(context), child: Text('OK', style: TextStyle(color: Colors.white))),
+          ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: kBlue),
+            onPressed: () => Navigator.pop(context),
+            child: Text('OK', style: TextStyle(color: Colors.white))),
         ],
       ),
     );
@@ -1076,7 +1177,8 @@ class _DetailGroupeScreenState extends State<DetailGroupeScreen> {
               final tel = contact.phones.isNotEmpty ? contact.phones.first.number : '';
               return ListTile(
                 leading: CircleAvatar(backgroundColor: kBluLight,
-                  child: Text(contact.displayName.isNotEmpty ? contact.displayName[0].toUpperCase() : '?', style: TextStyle(color: kBlue))),
+                  child: Text(contact.displayName.isNotEmpty ? contact.displayName[0].toUpperCase() : '?',
+                    style: TextStyle(color: kBlue))),
                 title: Text(contact.displayName),
                 subtitle: Text(tel),
                 onTap: () { Navigator.pop(context); _sauvegarderMembre(contact.displayName, tel); },
